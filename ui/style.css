@@ -500,6 +500,16 @@ span.unread {
 .status-noreply, .vbadge.unk { border-color: var(--bd2); color: var(--tx3); background: transparent; }
 .status-badge { height: 19px; padding: 0 8px; }
 
+/* 会话延续徽标（②P1/P2）：续用 / 新开（含原因） */
+.cont-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 19px; padding: 0 8px; border-radius: var(--r-full);
+  font-size: 11px; font-weight: 600;
+  background: transparent; border: 1px solid var(--bd2); color: var(--tx3);
+}
+.cont-badge.cont-cont { border-color: var(--ac-line); color: var(--ac); background: var(--ac-soft); }
+.cont-badge.cont-fresh { border-color: var(--bd2); color: var(--tx2); background: var(--bg2); }
+
 .detail-header { margin-bottom: 14px; }
 .detail-header h2 { font-size: 16px; margin-bottom: 6px; }
 .detail-header .sub { color: var(--tx3); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }

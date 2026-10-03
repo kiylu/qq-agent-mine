@@ -359,4 +359,40 @@ distillMaxChars: 12000       // 蒸馏输入的字符预算
 
 ② 全部完成（P1/P2/P3）。剩余可选项：附录里的**问题③（三档连贯性偏置）**方案，**未启用**。
 
+---
+
+# 实施记录：会话延续徽标（排障展示）
+
+状态：**已实施**（分支 `feat/continuation-ui-debug`）
+
+## 背景
+
+`session.continuation`（`mode` = `continuation`/`fresh` + `freshReason`）在 P1 就已写进会话对象
+并随 `#persist` 落盘、随 `/api/sessions/:id` 返回，但 **UI 一直没展示** —— 排障"这次为什么没续上"只能翻日志。
+
+## 改了什么
+
+### `ui/app/02-sse-sessions.js`
+
+`renderSessionDetail` 头部新增两个徽标（在会话状态徽标之后）：
+- `mode === 'continuation'` → 蓝色徽标「**续用第 N 轮**」（title 说明：复用了上一段前缀，思考链仍在）
+- `mode === 'fresh'` → 灰色徽标「**新开会话 · <原因>**」（原因来自 `continuation.reason`，
+  如「沉默 12 分钟 > 阈值 5 分钟（缓存已过期）」「系统提示已变化（缓存前缀失效）」「首次会话」）
+
+同时把 `continuation.mode / turns` 加进渲染指纹 `fp` —— 否则状态变了 DOM 不重渲染。
+
+### `ui/style.css`
+
+新增 `.cont-badge`（基础）+ `.cont-cont`（续用态，accent 色）+ `.cont-fresh`（新开态，中性色）。
+
+## 测试
+
+- `test/coverage-ui.mjs`：新增第 6 节「会话延续徽标」（2 项，静态断言 JS 逻辑 + CSS 类名一致）。
+  20 → **22 通过**（另 1 项 landing 下载链接失败 = 预存环境问题）。
+
+## 分支约定
+
+> 从本次起，**每个改动新建分支**，便于出问题时回滚。当前分支：`feat/continuation-ui-debug`。
+
+
 

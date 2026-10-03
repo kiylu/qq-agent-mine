@@ -319,4 +319,18 @@ await c.check('主题切换按钮有 aria-label（键盘/读屏可用）', () =>
   assert.ok(/id="theme-btn"[^>]*aria-label=/.test(html), '#theme-btn 缺少 aria-label');
 });
 
+// ── 6. 会话延续徽标（②P1/P2 的排障展示）────────────────────────────────
+c.section('6. 会话延续徽标');
+await c.check('会话详情渲染两种延续徽标（续用 / 新开）', () => {
+  assert.ok(appJs.includes('cont-badge'), '应有 cont-badge 徽标类');
+  assert.ok(/mode === 'continuation'/.test(appJs), '应区分 continuation 模式');
+  assert.ok(/mode === 'fresh'/.test(appJs), '应区分 fresh 模式');
+  assert.ok(appJs.includes('cont.reason'), 'fresh 徽标应带上 reason（为什么没续上）');
+});
+await c.check('延续徽标样式与类名一致（.cont-badge + .cont-cont/.cont-fresh）', () => {
+  assert.ok(css.includes('.cont-badge'), 'CSS 缺少 .cont-badge');
+  assert.ok(css.includes('.cont-cont'), 'CSS 缺少 .cont-cont（续用态）');
+  assert.ok(css.includes('.cont-fresh'), 'CSS 缺少 .cont-fresh（新开态）');
+});
+
 c.finish();

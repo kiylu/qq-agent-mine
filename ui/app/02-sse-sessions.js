@@ -515,7 +515,7 @@ function renderSessionDetail(s) {
   if (!detail) return;
   // 内容没变（轮询/SSE 重复推送）→ 完全不动 DOM，保住滚动位置和展开状态
   // json 模式切换也要触发重渲染
-  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
+  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}|${s.continuation?.mode || ''}|${s.continuation?.turns || ''}`;
   if (lastDetailFp === fp) return;
   const firstRender = lastDetailFp === null;
   lastDetailFp = fp;
@@ -527,11 +527,22 @@ function renderSessionDetail(s) {
   const statusBadge = `<span class="status-badge status-${s.status}">${STATUS_LABEL[s.status] || s.status}</span>`;
   const usage = s.usage || {};
 
+  // 会话延续状态（②P1/P2）：让"这次为什么没续上上一段对话"一眼可见。
+  // continuation.mode = 'continuation'（复用上一段前缀）| 'fresh'（重开）
+  // fresh 时 reason 说明原因（沉默超时 / 系统提示变 / 工具集变 / 超上限…）。
+  const cont = s.continuation || null;
+  let contBadge = '';
+  if (cont?.mode === 'continuation') {
+    contBadge = `<span class="cont-badge cont-cont" title="复用了上一段会话的上下文前缀，机器人自己的思考链仍在">续用第 ${cont.turns || '?'} 轮</span>`;
+  } else if (cont?.mode === 'fresh') {
+    contBadge = `<span class="cont-badge cont-fresh" title="本次新开会话：${esc(cont.reason || '')}">新开会话 · ${esc(cont.reason || '首次')}</span>`;
+  }
+
   const html = [];
   const canDelete = s.status !== 'running';   // 运行中的会话不能删（usage 还在累加）
   html.push(`
     <div class="detail-header">
-      <h2>${esc(chatName)} ${statusBadge}
+      <h2>${esc(chatName)} ${statusBadge} ${contBadge}
         <button class="btn btn-small" id="json-mode-btn" style="margin-left:10px">JSON 模式</button>
         ${canDelete ? `<button class="btn btn-small btn-danger" id="session-delete-btn" style="margin-left:6px" title="删除这条会话记录">删除</button>` : ''}
       </h2>
