@@ -373,5 +373,19 @@ await c.check('思维链渲染函数覆盖三类消息', () => {
   assert.ok(appJs.includes('tool_calls'), '应处理 assistant 的 tool_calls');
   assert.ok(css.includes('.mem-thought'), 'CSS 缺少 .mem-thought 样式');
 });
+await c.check('思维链角色查表的 key 与 kindOf 返回值对齐（防 undefined）', () => {
+  // 曾经的 bug：kindOf 返回 think/tool-result/user，但查表写的是 assistant/tool，
+  // 结果 assistant 条目渲染成 "undefined #2"。这里静态校验两者的 key 集合一致。
+  const kinds = [...appJs.matchAll(/return '(think|tool-result|user)';/g)].map((m) => m[1]);
+  assert.ok(kinds.length >= 3, `kindOf 应返回三种 kind，实际：${kinds.join(',')}`);
+  for (const table of ['roleLabel', 'roleIcon']) {
+    const m = new RegExp(`const ${table} = \\{([^}]*)\\}`).exec(appJs);
+    assert.ok(m, `找不到 ${table} 定义`);
+    for (const k of kinds) {
+      assert.ok(new RegExp(`['"]?${k}['"]?\\s*:`).test(m[1]),
+        `${table} 缺少 key「${k}」—— 与 kindOf 返回值不一致，会渲染成 undefined`);
+    }
+  }
+});
 
 c.finish();

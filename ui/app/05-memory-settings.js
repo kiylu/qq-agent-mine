@@ -341,8 +341,10 @@ function renderThoughts(bodyEl, hintEl, data) {
     if (m.role === 'tool' || m.tool_call_id) return 'tool-result';
     return 'user';
   };
-  const roleLabel = { user: '输入', assistant: '思考', tool: '工具结果' };
-  const roleIcon = { user: '📥', assistant: '💭', tool: '⚒' };
+  // 查表 key 必须与 kindOf 的返回值对齐（think / tool-result / user），
+  // 否则 roleIcon[kind] / roleLabel[kind] 取到 undefined —— 曾经的 bug。
+  const roleLabel = { user: '输入', think: '思考', 'tool-result': '工具结果' };
+  const roleIcon = { user: '📥', think: '💭', 'tool-result': '⚒' };
 
   const blocks = msgs.map((m, i) => {
     const kind = kindOf(m);
