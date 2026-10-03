@@ -8,7 +8,9 @@
 // 沉默阈值用 0.1 分钟（6 秒）—— 既能在一轮里跑完"连续→沉默"的对比，
 // 又留足余量（连续那次间隔 < 1 秒，沉默那次 sleep 7 秒）。
 import assert from 'node:assert/strict';
-import { bootApp, sleep, waitFor } from './_harness.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { bootApp, sleep, waitFor, ROOT } from './_harness.mjs';
 
 const pass = [], fail = [];
 async function check(name, fn) {
@@ -204,6 +206,44 @@ await check('思维链接口在没有缓冲时返回空数组（不报错）', a
   assert.equal(r.status, 200);
   assert.deepEqual(r.data.messages, [], '无缓冲时应返回空 messages');
   assert.equal(r.data.turns, 0);
+});
+
+// ═══ 场景 9：外部技能对会话延续的影响（兼容性回归护栏）═══
+//
+// 已实测确认的既有行为：
+//   · 静态 prompt.sections           → 不影响延续（systemPrompt 每轮一致）
+//   · 动态 promptSections 但内容稳定 → 不影响延续
+//   · 动态 promptSections 且内容随会话变化 → systemPrompt 逐字节不等 → 每轮强制 fresh
+//
+// 第三条不是本次改造引入的 bug（`systemPrompt` 逐字节比较是 P1 的设计），
+// 但它是"外部 Skill × 会话延续"的真实冲突面。这里用护栏锁住现状：
+// 若将来把比较逻辑改成"只比核心前缀"，这条会变成 pass，届时可放宽。
+await check('Skill 动态提示词段变化时走 fresh（已知行为，护栏）', async () => {
+  const skillDir = path.join(ROOT, 'skills', 'cont-brake-probe');
+  try {
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'skill.json'), JSON.stringify({
+      id: 'cont-brake-probe', name: '延续护栏探针', version: '0.0.1', apiVersion: 1,
+      category: 'utility', description: 'probe'
+    }));
+    fs.writeFileSync(path.join(skillDir, 'index.js'), `
+      export function setup() {}
+      // 内容随 sessionId 变化 —— 模拟外部 Skill "每轮注入会变的内容"
+      export function promptSections(ctx) {
+        return [{ id: 'dyn', title: '动态', content: 'sid=' + (ctx?.sessionId || 'x'), priority: 40 }];
+      }
+    `);
+    await app.reloadSkills({ reason: 'test' });
+
+    await fire('@覆盖Bot 护栏第一句', 70040);
+    const r2 = await fire('@覆盖Bot 护栏第二句', 70041);
+    // 现状：动态段变化 → systemPrompt 不等 → fresh（messages 只有 system+user）
+    assert.equal(r2.messages.length, 2,
+      '动态提示词段变化时应走 fresh（messages 仅 system+user）—— 此为已知行为护栏');
+  } finally {
+    fs.rmSync(skillDir, { recursive: true, force: true });
+    try { await app.reloadSkills({ reason: 'test' }); } catch { /* ignore */ }
+  }
 });
 
 await teardown();
