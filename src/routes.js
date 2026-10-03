@@ -1475,11 +1475,15 @@ export function createRoutes(deps) {
       // 手动「重开会话」：丢弃该会话 LLM 侧的对话历史（机器人自己的思考链），
       // 下次触发走全新会话。**不动消息存档、不动记忆** —— 群里聊过的内容下次
       // 仍会作为【已读信息】带过去，只是不再续用旧的 messages 前缀。
+      // body.distill=true 时额外触发"关闭蒸馏"（把思考链压成自身状态）——
+      // 对应 UI 的「重开并蒸馏」入口，与自动关闭同一条路径。
       method: 'POST', pattern: /^\/api\/chats\/(group|private)_(\d+)\/new-conversation$/,
-      handler: async ({ res, json, match }) => {
+      handler: async ({ req, res, json, match }) => {
         const chatKey = `${match[1]}:${match[2]}`;
-        const had = orchestrator.resetContinuation(chatKey);
-        return json(res, 200, { ok: true, had });
+        let distill = false;
+        try { distill = (await bodyOf(req))?.distill === true; } catch { /* 无 body 视作 false */ }
+        const had = orchestrator.resetContinuation(chatKey, { distill });
+        return json(res, 200, { ok: true, had, distill });
       }
     },
     {

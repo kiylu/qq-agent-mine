@@ -1408,12 +1408,29 @@ export class Orchestrator {
    * 手动"重开会话"：丢弃该会话的活跃缓冲，下次触发走全新会话（UI 按钮入口）。
    * 只清"LLM 侧的对话历史" —— **不动消息存档、不动记忆**：
    * 群里聊过的内容下次仍会作为【已读信息】带过去，只是机器人自己的思考链归零。
+   *
+   * @param {string} chatKey
+   * @param {{ distill?: boolean }} [opts]
+   *   distill=true  → 清缓冲前把思考链蒸馏成"自身状态"（_self.json）。
+   *     用于"这次会话里它想出来的东西值得留"的场景（如任务半途、暗牌有进展）。
+   *   distill=false（默认）→ 只归档不蒸馏，忠实兑现"忘掉自己想过什么"的语义。
+   *     用于"它跑偏了/钻牛角尖，我要它彻底忘掉这段思路"的场景。
+   *
+   * 两条路径的共同点：都会归档（排障可回溯）、都不清 promptAnchors
+   * （锚点是缓存命中的主要来源，只重置"思考链"，不重置"输入前缀"）。
    */
-  resetContinuation(chatKey) {
+  resetContinuation(chatKey, { distill = false } = {}) {
     const key = String(chatKey ?? '');
     if (!key) return false;
-    const had = Boolean(this.conversation.get(key));
-    this.conversation.clear(key, { archive: true, reason: '手动重开会话' });
+    const prevBuf = this.conversation.get(key);
+    const had = Boolean(prevBuf);
+    if (distill) {
+      // 与自动关闭（沉默超时等）同一条路径：归档 + fire-and-forget 蒸馏。
+      // 蒸馏是异步的，不阻塞本次接口返回。
+      this.#distillAndClose(key, prevBuf, '手动重开会话（含蒸馏）');
+    } else {
+      this.conversation.clear(key, { archive: true, reason: '手动重开会话' });
+    }
     return had;
   }
 

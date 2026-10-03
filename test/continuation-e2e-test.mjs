@@ -98,6 +98,36 @@ await check('重开会话接口对"本来就没有缓冲"的会话也返回 200�
   assert.equal(r.data.had, false, '第二次应报 had=false');
 });
 
+await check('重开并蒸馏（distill=true）：清缓冲同时触发一次蒸馏请求', async () => {
+  // 先建立一段缓冲（造出可蒸馏的思考链）
+  await fire('@覆盖Bot 蒸馏前铺垫', 70006);
+  assert.ok((await contList()).some((x) => x.chatKey === 'group:456'), '应先有缓冲');
+
+  const before = reqCount();
+  const r = await request('POST', '/api/chats/group_456/new-conversation', { body: { distill: true } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.had, true, '重开前应有缓冲可清');
+  assert.equal(r.data.distill, true, '响应应回显 distill=true');
+
+  // 缓冲已清（与普通重开一致）
+  assert.equal((await contList()).some((x) => x.chatKey === 'group:456'), false, '缓冲应被清空');
+
+  // 蒸馏是 fire-and-forget 的额外 LLM 调用：等它出现（提示词含"记忆归档"标记）
+  await waitFor(() => reqCount() > before, 8000, '应触发一次蒸馏请求');
+  const distillReq = llm.state.requests[reqCount() - 1];
+  assert.ok(String(distillReq.messages?.[0]?.content || '').includes('记忆归档'),
+    '蒸馏请求的系统提示应含"记忆归档"标记');
+});
+
+await check('重开会话（distill 缺省）不触发蒸馏', async () => {
+  await fire('@覆盖Bot 不蒸馏铺垫', 70007);
+  const before = reqCount();
+  const r = await request('POST', '/api/chats/group_456/new-conversation', { body: {} });
+  assert.equal(r.data.distill, false, '缺省应回显 distill=false');
+  await sleep(1200);   // 给"万一误触发"的蒸馏留出冒头时间
+  assert.equal(reqCount(), before, '普通重开不应产生任何额外 LLM 调用');
+});
+
 // ═══ 场景 4：沉默超过阈值 → 回到 fresh ═══
 await check('沉默超过阈值后触发：走 fresh（不再续用旧上下文）', async () => {
   // 先建立一段缓冲（上一条用例把缓冲清掉了），再静默 7 秒（阈值 6 秒）

@@ -112,7 +112,8 @@ function renderChatMessages() {
       <div class="sub"><span data-field="chat-msg-count"></span><span data-field="chat-continuation"></span><span data-field="chat-archive-count"></span></div>
     </div>
     <div class="chat-toolbar">
-      <button class="btn btn-small" id="chat-newconv-btn" title="丢弃机器人对这段对话的上下文（LLM 侧历史），下一句从全新会话开始；不影响消息存档与群友印象">重开会话</button>
+      <button class="btn btn-small" id="chat-newconv-btn" title="【清空思路】丢弃机器人对这段对话的思考链（LLM 侧历史），下一句从全新会话开始。群友印象与消息存档不受影响。适合：机器人跑偏/钻牛角尖，想让它彻底忘掉这段思路。">重开会话</button>
+      <button class="btn btn-small" id="chat-newconv-distill-btn" title="【记住结论再重开】先把这段思考链蒸馏成机器人的长期记忆（自身状态），再清空思路、下一句从全新会话开始。适合：任务还没完、或暗牌有进展，怕重开后想不起来。">重开并蒸馏</button>
       <button class="btn btn-small" id="chat-del-mode-btn" title="选择部分消息删除">选择删除</button>
       <button class="btn btn-small btn-danger" id="chat-clear-btn" title="清空这个会话的全部消息存档">清空存档</button>
       <input type="text" id="test-send-text" class="inp" placeholder="手动发一条测试消息" style="flex:1;min-width:120px" />
@@ -149,25 +150,48 @@ function renderChatMessages() {
     .catch(() => { /* ignore */ });
   // 重开会话（二次确认）：丢弃 LLM 侧的对话历史 —— 机器人"忘掉自己想过什么"，
   // 下一句从全新会话开始。与「清空存档」的区别：消息存档与群友印象都不动。
-  $('#chat-newconv-btn').addEventListener('click', async () => {
+  //
+  // 两个入口的区别（文案必须写清楚，否则用户分辨不出）：
+  //   重开会话     = 清空思路（不蒸馏）——"这段思路我不要了"
+  //   重开并蒸馏   = 先记住结论再清空   ——"这段思路有价值，别丢"
+  async function doResetContinuation({ distill, btnLabel }) {
     let info = null;
     try { info = (await api(`/api/chats/${key.replace(':', '_')}/continuation`)).continuation; } catch { /* 拿不到就按"无延续"提示 */ }
     const detailLine = info
-      ? `当前这段对话已延续 ${info.turns} 轮（上下文约 ${info.messages} 条消息）。\n\n`
+      ? `当前这段对话已延续 ${info.turns} 轮（LLM 上下文约 ${info.messages} 条消息）。\n\n`
       : '当前没有进行中的延续会话（重开仍然安全，只是没有可丢弃的上下文）。\n\n';
-    if (!(await uiConfirm(
-      `${detailLine}重开会话后，机器人会忘掉这段对话里自己想过、说过什么，下一句将从全新会话开始。\n消息存档与群友印象不受影响。\n\n确定重开吗？`,
-      { okText: '重开会话' }
-    ))) return;
+    const body = distill
+      ? `${detailLine}将执行：\n`
+        + `① 把机器人这段对话里「自己想过什么」蒸馏成长期记忆（写入「🪞 自身状态」）\n`
+        + `② 再清空思路，下一句从全新会话开始\n\n`
+        + `群友印象、消息存档不受影响；当前思路会先归档留底。\n\n`
+        + `⚠️ 蒸馏是后台异步执行的，弹窗关闭后约几秒写入记忆页。\n\n`
+        + `适用场景：任务还没做完、暗牌（如海龟汤）已有进展，担心重开后忘掉。\n\n`
+        + `确定「重开并蒸馏」吗？`
+      : `${detailLine}将执行：\n`
+        + `① 清空机器人这段对话的「思考链」，下一句从全新会话开始\n`
+        + `② 丢弃的思考链会先归档留底（可回溯）\n\n`
+        + `群友印象、消息存档、自身状态都不受影响。\n\n`
+        + `⚠️ 本操作不蒸馏：机器人会彻底忘掉这段对话里的思考过程（包括结论）。\n\n`
+        + `适用场景：机器人跑偏了、钻牛角尖，想让它彻底忘掉这段思路重新开始。\n\n`
+        + `确定重开会话吗？`;
+    if (!(await uiConfirm(body, { okText: btnLabel }))) return;
     try {
-      await api(`/api/chats/${key.replace(':', '_')}/new-conversation`, { method: 'POST', body: '{}' });
+      await api(`/api/chats/${key.replace(':', '_')}/new-conversation`, {
+        method: 'POST',
+        body: JSON.stringify({ distill: !!distill })
+      });
       const el = detail.querySelector('[data-field="chat-continuation"]');
       if (el) el.textContent = '';
-      alert('已重开会话：下一句将从全新会话开始。');
+      alert(distill
+        ? '已重开并蒸馏：思路已清空，思考链正在后台写入「记忆 → 🪞 自身状态」，稍后可查看。'
+        : '已重开会话：下一句将从全新会话开始。');
     } catch (e) {
       alert(`重开会话失败：${e.message}`);
     }
-  });
+  }
+  $('#chat-newconv-btn').addEventListener('click', () => doResetContinuation({ distill: false, btnLabel: '重开会话' }));
+  $('#chat-newconv-distill-btn').addEventListener('click', () => doResetContinuation({ distill: true, btnLabel: '重开并蒸馏' }));
   // 清空存档：删除这个会话的全部消息（不可恢复）
   $('#chat-clear-btn').addEventListener('click', async () => {
     const meta = state.chats.find((c) => c.key === key) || {};
