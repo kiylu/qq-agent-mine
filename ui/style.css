@@ -1727,12 +1727,32 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 .ac-tier-wrap { display: flex; flex-direction: column; gap: 4px; }
 /* 触发概率手动输入（与档位滑条双向同步，2026-10-03）。
    滑条只能拖，填不了精确值 —— 加一个可输入的口子：填百分比自动跳到 3 档对应位置。
-   非 3 档时 disabled（概率恒为 0 或 100，编辑无意义），hint 说明原因。 */
-.ac-prob-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+   非 3 档时 disabled（概率恒为 0 或 100，编辑无意义），hint 说明原因。
+
+   ⚠️ 宽度必须用 .inp-wrap .inp 一起写（不能单写 .ac-prob-row .inp）：
+   下面第 1800 行那条 .inp-wrap .inp { width: auto } 优先级同样是两个 class，
+   谁在文件里靠后谁生效 —— 单写 .ac-prob-row .inp { width: 100% } 会被它盖掉，
+   输入框按固有宽度涨到 ~150px、撑破 92px 的 .inp-wrap 并压进 hint 的地盘，
+   配上 flex-wrap 就把说明挤到下一行（看着像"文案掉到输入框底部"）。 */
+.ac-prob-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .ac-prob-label { font-size: 12.5px; color: var(--tx2); }
-.ac-prob-row .inp-wrap { width: 92px; }
-.ac-prob-row .inp { width: 100%; }
-.ac-prob-hint { flex: 1 1 200px; min-width: 0; margin: 0; }
+.ac-prob-row .inp-wrap { width: 92px; flex: 0 0 92px; }
+/* 去掉 type=number 悬停时 Chrome/Edge 冒出的原生上下微调箭头：
+   它挤在 .inp-suffix（%）左边，既跟 % 抢位置，悬停时还会突然出现、
+   把输入框里的数字挤窄。min-width/max-width 是标准写法里用于让
+   appearance 生效的前置条件，缺了它 Firefox 下不生效。
+
+   宽度与 padding-right 都在这条里一起改：
+   - width:100% 必须写在 .inp-wrap .inp 上（见上方 ⚠️，单 class 会被覆盖）；
+   - padding-right 从 36px 收到 24px —— 那 36px 是"箭头 + %"一起预留的，
+     箭头去掉后纯属浪费，92px 的框会只剩 40px 放数字、三位数就顶格。 */
+.ac-prob-row .inp-wrap .inp { width: 100%; padding-right: 24px; }
+.ac-prob-row .inp[type=number] { min-width: 0; max-width: 100%; -moz-appearance: textfield; appearance: textfield; }
+.ac-prob-row .inp[type=number]::-webkit-outer-spin-button,
+.ac-prob-row .inp[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+/* flex-basis 给足 + margin-left，保证与输入框留出明确间距；
+   不换行时它独占剩余空间，换行时也仍与输入框同行对齐（不会掉到输入框底部）。 */
+.ac-prob-hint { flex: 1 1 260px; min-width: 0; margin: 0 0 0 2px; }
 .ac-prob-row .inp:disabled { opacity: .5; cursor: not-allowed; }
 /* 分群按钮区（活跃设置 → 选择要单独设置的群聊）——
    2026-09-25 补齐：这组类（ac-group-*）从模态框时代起就没写过样式，

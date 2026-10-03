@@ -275,6 +275,43 @@ await c.check('活跃设置可手动输入触发概率且与滑条同步', () =>
   assert.ok(/\.ac-prob-row/.test(css), 'style.css 里缺少 .ac-prob-row 样式');
 });
 
+await c.check('概率输入框：移除原生微调箭头且不挤压右侧说明', () => {
+  // 1) 悬停时 Chrome/Edge 会冒出的上下箭头，跟右边的 % 后缀抢位置。
+  //    appearance:textfield 是标准去法，::-webkit-*-spin-button 是 Chrome/Edge 去法，
+  //    Firefox 只认前一个；-moz-appearance 是老 Gecko 的等价写法。
+  const cssClean = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.ok(/appearance:\s*textfield/.test(cssClean),
+    '没有 appearance:textfield —— 数字输入框的原生上下箭头没去掉（Firefox 不生效）');
+  assert.ok(/::-webkit-(outer|inner)-spin-button[\s\S]{0,120}-webkit-appearance:\s*none/.test(cssClean),
+    '没有禁用 ::-webkit-*-spin-button —— Chrome/Edge 悬停时仍会冒出原生箭头');
+
+  // 2) 宽度层叠：.inp-wrap .inp { width:auto }（第 1800 行附近）与本块的选择器
+  //    **同为一个 class 层级时后者胜出**，输入框会按固有宽度涨到 ~150px、撑破
+  //    92px 的 .inp-wrap 并压进 hint 的地盘，flex-wrap 再把说明挤到输入框底部。
+  //    这里算出真正命中的最高优先级规则，防止有人改回单 class 写法。
+  const rules = [];
+  const re = /([^{}]+)\{([^{}]*)\}/g;
+  let m;
+  while ((m = re.exec(cssClean)) !== null) {
+    const sel = m[1].trim();
+    if (!/\.inp-wrap\s+\.inp\b/.test(sel)) continue;   // 只看会命中本 input 的规则
+    const w = (m[2].match(/(^|;)\s*width\s*:\s*([^;]+)/) || [])[2];
+    if (!w) continue;
+    const ids = (sel.match(/#[\w-]+/g) || []).length;
+    const cls = (sel.match(/\.[\w-]+/g) || []).length + ((sel.match(/\[[^\]]+\]/) || []).length);
+    rules.push({ sel, width: w.trim(), spec: ids * 100 + cls * 10 });
+  }
+  const win = rules.reduce((a, b) => (b.spec >= a.spec ? b : a));
+  assert.strictEqual(win.width, '100%',
+    `命中概率输入框的最高优先级规则是「${win.sel}」width:${win.width} —— `
+    + '应让输入框填满 .inp-wrap 的 92px；width:auto 会撑破容器并压住右侧说明');
+  // 说明文字与输入框要有明确间距：gap 或 margin 至少给到 8px。
+  const gap = (cssClean.match(/\.ac-prob-row\s*\{[^}]*gap:\s*(\d+)px/) || [])[1];
+  const hintML = (cssClean.match(/\.ac-prob-hint\s*\{[^}]*margin:[^;]*?(\d+)px/) || [])[1];
+  assert.ok(Number(gap) >= 8 || Number(hintML) >= 4,
+    `概率输入框与右侧说明间距过小（gap:${gap || '无'}px, hint margin-left:${hintML || '0'}px）`);
+});
+
 await c.check('添加模态框有独立的口令入口（不再强开市场网页）', () => {
   assert.ok(/id="addmod-code"/.test(appJs), '缺少「通过口令添加」入口按钮');
   // 口令入口必须是**只开口令框、不开网页**；去市场入口才开网页。
