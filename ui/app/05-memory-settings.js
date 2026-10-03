@@ -358,15 +358,18 @@ function renderThoughts(bodyEl, hintEl, data) {
       const label = meta?.name || name;
       let args = c.function?.arguments ?? c.arguments ?? '';
       try { args = JSON.stringify(JSON.parse(args), null, 1); } catch { /* 非 JSON 原样 */ }
-      return `
+      return squeezeHtml(`
         <div class="think-call">
           <div class="think-call-head"><span class="tool-ico">${ico}</span><span class="tool-name-flow">${esc(name)}</span><span class="tool-label">${esc(label)}</span></div>
           <div class="tool-args">${esc(String(args))}</div>
-        </div>`;
+        </div>`);
     }).join('');
-    // 纯工具调用轮（content 空）：只显示调用卡片，不显示空的"思考"
-    const showText = text.trim() || !calls.length;
-    return `
+    // 纯工具调用轮（content 空）：只显示调用卡片，不显示空的"思考"。
+    // ⚠️ .coll-body 是 white-space:pre-wrap：任何夹在标签之间的换行/缩进都会被
+    //    当成真实空行渲染出来（鼠标能选中），表现为"卡片内容上下各有一段留白"。
+    //    所以：① 文本自身首尾空白要裁掉；② 拼好的片段统一走 squeezeHtml 压掉标签间空白。
+    const bodyInner = `${text.trim() ? esc(text.replace(/^\s+|\s+$/g, '')) : ''}${callsHtml}`;
+    return squeezeHtml(`
       <details class="collapsible mem-thought mem-thought-${kind}">
         <summary>
           <span class="tool-ico">${roleIcon[kind]}</span>
@@ -375,15 +378,14 @@ function renderThoughts(bodyEl, hintEl, data) {
           ${kind === 'user' ? `<span class="tool-label">${fmtChars(text.length)}</span>` : ''}
           ${calls.length ? `<span class="badge ok">${calls.length} 次工具调用</span>` : ''}
         </summary>
-        <div class="coll-body think-body">${showText ? esc(text || '（空）') : ''}${callsHtml}</div>
-      </details>`;
+        <div class="coll-body think-body">${bodyInner}</div>
+      </details>`);
   }).join('');
 
-  bodyEl.innerHTML = `
+  bodyEl.innerHTML = squeezeHtml(`
     <div class="think-meta muted">起始 ${fmtClock(data.startedAt)} · 最近 ${fmtClock(data.lastTurnAt)}</div>
-    <div class="msg-flow think-flow-list">${blocks}</div>`;
+    <div class="msg-flow think-flow-list">${blocks}</div>`);
 }
-
 /** 字符数简写（思维链显示用）。 */
 function fmtChars(n) {
   n = Number(n) || 0;
@@ -458,7 +460,7 @@ async function loadGroupMembers(chatId, chatKey) {
     const notes = cfg.memberNotes || {};
     const box = $('#mem-members');
     if (box) {
-      box.innerHTML = `<details class="collapsible mem-fold" open><summary><span class="mem-who">群成员（${state.groupMembers.length} 人）</span></summary><div class="coll-body"><table class="member-table">
+      box.innerHTML = squeezeHtml(`<details class="collapsible mem-fold" open><summary><span class="mem-who">群成员（${state.groupMembers.length} 人）</span></summary><div class="coll-body"><table class="member-table">
         <tr><th style="text-align:left">群名片</th><th style="text-align:left">QQ昵称</th><th style="text-align:left">QQ号</th><th style="width:90px;text-align:right">备注</th></tr>
         ${state.groupMembers.map((m) => {
           const note = notes[String(m.userId)];
@@ -469,7 +471,7 @@ async function loadGroupMembers(chatId, chatKey) {
             <td style="text-align:right"><button class="btn btn-small member-note-edit" data-qq="${esc(m.userId)}">编辑备注</button></td>
           </tr>`;
         }).join('')}
-      </table></div></details>`;
+      </table></div></details>`);
       box.querySelectorAll('.member-note-edit').forEach((el) => {
         el.addEventListener('click', () => openMemberNoteModal(el.dataset.qq, chatKey));
       });

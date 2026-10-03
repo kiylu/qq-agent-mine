@@ -786,5 +786,64 @@ console.log('\n=== 应用内 alert 弹窗 ===');
   console.log('  ' + (wrapped ? 'OK   ' : 'FAIL ') + 'window.alert 已被包装为应用内弹窗');
 }
 
+  // ── squeezeHtml：折叠卡正文的"幽灵空行"回归（2026-10-03）────────────────────
+  // 背景：反引号模板拼 HTML 时标签间会带上 `\n` + 缩进；`.coll-body` 是
+  // white-space:pre-wrap，这些空白会被当成**真实文本**渲染成空行（鼠标可选中），
+  // 视觉上像"卡片内容上下各有一段留白"。squeezeHtml 负责压掉标签间空白。
+  console.log('\n=== squeezeHtml 折叠卡空行抑制 ===');
+  {
+    const sq = sandbox.squeezeHtml;
+    const okFn = typeof sq === 'function';
+    okFn ? pass++ : fail++;
+    console.log('  ' + (okFn ? 'OK   ' : 'FAIL ') + 'squeezeHtml 已定义');
+
+    if (okFn) {
+      // ① 标签间空白被清除
+      const t1 = sq(`
+        <div class="think-call">
+          <div class="x">正文</div>
+        </div>`);
+      const ok1 = !/>\s+</.test(t1) && !/^\s/.test(t1) && !/\s$/.test(t1);
+      ok1 ? pass++ : fail++;
+      console.log('  ' + (ok1 ? 'OK   ' : 'FAIL ') + '标签之间的换行/缩进全部清除且无首尾空白');
+
+      // ② 标签内部（真正的正文）里的换行必须原样保留 —— 否则 JSON 会被压成一行
+      const inner = '{\n "messages": [\n  "6"\n ]\n}';
+      const t2 = sq(`<div class="tool-args">${inner}</div>`);
+      const ok2 = t2.includes('{\n "messages"') && t2.includes('\n}');
+      ok2 ? pass++ : fail++;
+      console.log('  ' + (ok2 ? 'OK   ' : 'FAIL ') + '正文内部换行保留（JSON 不被压平）');
+
+      // ③ 纯文本（无标签）只裁首尾
+      const ok3 = sq('\n  你好\n世界  \n') === '你好\n世界';
+      ok3 ? pass++ : fail++;
+      console.log('  ' + (ok3 ? 'OK   ' : 'FAIL ') + '纯文本只裁首尾、不动中间换行');
+
+      // ④ 真实链路：renderThoughts 产出的每个 .coll-body 内，标签之间不该有幽灵空白
+      //    （这才是真正会被 pre-wrap 渲染成空行的地方；外层容器的缩进无害，不在这里断言）
+      const fake = {
+        messages: [
+          { role: 'assistant', content: '', tool_calls: [{ function: { name: 'send_message', arguments: '{"messages":["6"]}' } }] },
+          { role: 'tool', content: '{"sent":1}' },
+        ],
+        startedAt: Date.now(), lastTurnAt: Date.now(), turns: 1, chars: 10
+      };
+      const bodyEl = makeEl('', 'coll-body');
+      const hintEl = makeEl();
+      let rtErr = '';
+      try { sandbox.renderThoughts(bodyEl, hintEl, fake); }
+      catch (e) { rtErr = String(e && e.message); }
+      const out = String(bodyEl.innerHTML || '');
+      // 每个 coll-body 的开标签后、闭标签前都不能是纯空白
+      const innerBad = /<div class="coll-body[^"]*">\s+</.test(out) || /<div class="coll-body[^"]*">\n/.test(out);
+      // 也不该出现"标签间夹换行+缩进"（> \n 空格 <）
+      const betweenBad = />\n\s+</.test(out);
+      const ok4 = !rtErr && !innerBad && !betweenBad;
+      ok4 ? pass++ : fail++;
+      console.log('  ' + (ok4 ? 'OK   ' : 'FAIL ') + 'renderThoughts 产出的 .coll-body 无幽灵空行'
+        + (rtErr ? ' -> ' + rtErr : (ok4 ? '' : ' -> ' + JSON.stringify(out.slice(0, 180)))));
+    }
+  }
+
 console.log('\n' + (fail ? 'FAILED ' + fail + ' / passed ' + pass : 'ALL PASSED ' + pass));
 process.exit(fail ? 1 : 0);

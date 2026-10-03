@@ -590,25 +590,25 @@ function renderSessionDetail(s) {
       status: s.status,
       error: s.error ?? null
     };
-    html.push(`
+    html.push(squeezeHtml(`
       <details class="collapsible" open>
         <summary>JSON 模式（模型输入/输出的原始内容）</summary>
         <div class="coll-body" style="max-height:none">${esc(JSON.stringify(raw, null, 2))}</div>
-      </details>`);
+      </details>`));
   } else {
     if (s.systemPrompt) {
-      html.push(`
+      html.push(squeezeHtml(`
         <details class="collapsible">
           <summary>系统提示（${s.systemPrompt.length} 字符，每次运行重发）</summary>
           <div class="coll-body">${esc(s.systemPrompt)}</div>
-        </details>`);
+        </details>`));
     }
     if (s.userPrompt) {
-      html.push(`
+      html.push(squeezeHtml(`
         <details class="collapsible">
           <summary>本次输入（${s.userPrompt.length} 字符 —— 零对话历史，全部来自 JSON 存档）</summary>
           <div class="coll-body">${esc(s.userPrompt)}</div>
-        </details>`);
+        </details>`));
     }
   }
 
@@ -620,7 +620,7 @@ function renderSessionDetail(s) {
         const ico = meta?.icon || '⚒';
         const label = meta?.name || item.toolCall.name;
         const err = item.toolCall.isError;
-        html.push(`
+        html.push(squeezeHtml(`
           <details class="collapsible tool-flow ${err ? 'tool-error' : ''}">
             <summary>
               <span class="tool-ico">${ico}</span>
@@ -632,9 +632,9 @@ function renderSessionDetail(s) {
               <div class="tool-args">${esc(JSON.stringify(item.toolCall.args, null, 1))}</div>
               <div class="tool-result ${err ? 'is-error' : ''}">${esc(item.toolCall.result)}</div>
             </div>
-          </details>`);
+          </details>`));
       } else if (item.toolImages) {
-        html.push(`
+        html.push(squeezeHtml(`
           <details class="collapsible tool-flow">
             <summary>
               <span class="tool-ico">🖼️</span>
@@ -642,11 +642,11 @@ function renderSessionDetail(s) {
               <span class="tool-label">${item.toolImages.count} 张图片</span>
             </summary>
             <div class="coll-body muted">已作为图像输入注入模型</div>
-          </details>`);
+          </details>`));
       } else if (item.role === 'assistant') {
         const text = typeof item.content === 'string' ? item.content : '';
         if (item.tool_calls && item.tool_calls.length && !text.trim()) continue; // 纯工具调用轮，卡片已展示
-        html.push(`
+        html.push(squeezeHtml(`
           <details class="collapsible tool-flow think-flow">
             <summary>
               <span class="tool-ico">💭</span>
@@ -654,7 +654,7 @@ function renderSessionDetail(s) {
               <span class="tool-label">不发送</span>
             </summary>
             <div class="coll-body think-body">${esc(text || '（无文本输出，仅调用工具）')}</div>
-          </details>`);
+          </details>`));
       }
     }
     // 发出的消息
@@ -664,7 +664,7 @@ function renderSessionDetail(s) {
       const sentLines = sentList.map((sent) =>
         `已发送到 QQ${sent.at ? ` · ${esc(sent.at)}` : ''}\n${esc(sent.text)}`
       ).join('\n\n');
-      html.push(`
+      html.push(squeezeHtml(`
         <details class="collapsible tool-flow sent-flow" open>
           <summary>
             <span class="tool-ico">💬</span>
@@ -673,11 +673,11 @@ function renderSessionDetail(s) {
             <span class="badge ok">已送达</span>
           </summary>
           <div class="coll-body sent-body">${sentLines}</div>
-        </details>`);
+        </details>`));
     }
   }
   if (s.error) {
-    html.push(`
+    html.push(squeezeHtml(`
       <details class="collapsible tool-flow error-flow" open>
         <summary>
           <span class="tool-ico">⚠</span>
@@ -686,11 +686,11 @@ function renderSessionDetail(s) {
           <span class="badge err">异常</span>
         </summary>
         <div class="coll-body error-body">${esc(s.error)}</div>
-      </details>`);
+      </details>`));
   }
   // finish 收尾：单独一张卡（默认展开）
   if (s.finishReason) {
-    html.push(`
+    html.push(squeezeHtml(`
       <details class="collapsible tool-flow finish-flow" open>
         <summary>
           <span class="tool-ico">🏁</span>
@@ -698,7 +698,7 @@ function renderSessionDetail(s) {
           <span class="tool-label">结束本次</span>
         </summary>
         <div class="coll-body finish-body">${esc(s.finishReason)}</div>
-      </details>`);
+      </details>`));
   }
   html.push('</div>');
 
