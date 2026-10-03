@@ -65,7 +65,10 @@ const document = {
     return byId.get('#' + id);
   },
   createElement: (tag) => makeEl('', tag),
-  addEventListener() {}
+  addEventListener() {},
+  removeEventListener() {},
+  // 「扩展」二级菜单靠这个自定义事件在切页时收起自己
+  dispatchEvent() {}
 };
 
 // 关键：让 #chat-detail 的 innerHTML 重写会重置 scrollTop（模拟浏览器真实行为）
@@ -89,7 +92,12 @@ const sandbox = {
   navigator: { userAgent: 'node' }, requestAnimationFrame: (f) => setTimeout(f, 0),
   URL, Intl, Math, JSON, Date, Number, String, Object, Array, Map, Set, Boolean, RegExp, Error,
   isNaN, parseInt, parseFloat, encodeURIComponent, decodeURIComponent,
-  structuredClone: (x) => JSON.parse(JSON.stringify(x))
+  structuredClone: (x) => JSON.parse(JSON.stringify(x)),
+  // vm 的 window 是本 sandbox 自己（无 DOM），补空实现让 11-init 的
+  // initExtSubmenu() 在加载期注册 resize 监听时不崩（与 usage-e2e 同理）。
+  addEventListener() {}, removeEventListener() {},
+  // switchTab 末尾派发 qqagent:tabswitched（供「扩展」二级菜单收起自己）
+  CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;

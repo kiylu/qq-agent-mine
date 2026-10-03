@@ -193,17 +193,48 @@ await c.check('每个页签都有对应的 view-<name> 容器', () => {
     `这些页签没有对应的视图容器（点上去会没有任何反应）：${missing.join(', ')}`);
 });
 
-await c.check('「插件」页签存在，且紧挨着「技能」右边', () => {
+await c.check('「扩展」是技能/插件的共同父级页签（二级选择器）', () => {
+  // 2026-10-03：技能、插件合并为一级菜单「扩展」，内容仍分两页。
+  // 所以一级 nav 里只该有「扩展」（data-tab="skills"），「插件」降为二级项。
   const tabs = [...html.matchAll(/data-tab="([\w-]+)"/g)].map((m) => m[1]);
-  const i = tabs.indexOf('skills');
-  assert.ok(i >= 0, '找不到「技能」页签');
-  assert.ok(tabs.includes('plugins'), '找不到「插件」页签');
-  assert.equal(tabs[i + 1], 'plugins',
-    `「插件」应当紧跟在「技能」右边，实际顺序：${tabs.join(' → ')}`);
-  // 两个视图容器也都得在
+  assert.ok(tabs.includes('skills'), '找不到一级「扩展」页签（data-tab="skills"）');
+  // 「插件」不再是一级页签（否则又变回两个平级页签，合并就白做了）
+  assert.ok(!tabs.includes('plugins'),
+    `「插件」不应再是一级页签，实际一级页签：${tabs.join(' → ')}`);
+  // 二级选择器与两个选项
+  assert.ok(html.includes('id="ext-submenu"'), '缺少二级选择器容器 #ext-submenu');
+  assert.ok(html.includes('id="ext-tab"'), '缺少一级触发器 #ext-tab');
+  assert.ok(/data-ext-tab="skills"/.test(html), '二级选择器缺少「技能」项');
+  assert.ok(/data-ext-tab="plugins"/.test(html), '二级选择器缺少「插件」项');
+  // 两个视图容器也都得在（内容页没合并掉）
   for (const id of ['view-skills', 'view-plugins']) {
     assert.ok(html.includes(`id="${id}"`), `缺少视图容器 ${id}`);
   }
+});
+
+await c.check('二级菜单有展开/收起与定位逻辑', () => {
+  assert.ok(/function initExtSubmenu/.test(appJs), '缺少 initExtSubmenu');
+  assert.ok(/ext-tab/.test(appJs), 'JS 里没有对 #ext-tab 的处理');
+  assert.ok(/qqagent:tabswitched/.test(appJs),
+    '切页签时菜单没有自动收起（switchTab 未派发 qqagent:tabswitched）');
+});
+
+await c.check('「打开网站」入口已移除', () => {
+  assert.ok(!/id="open-site-btn"/.test(html), 'index.html 里仍有「打开网站」按钮');
+  assert.ok(!/open-site-btn/.test(appJs), 'JS 里仍有 open-site-btn 绑定');
+});
+
+await c.check('添加模态框有独立的口令入口（不再强开市场网页）', () => {
+  assert.ok(/id="addmod-code"/.test(appJs), '缺少「通过口令添加」入口按钮');
+  // 口令入口必须是**只开口令框、不开网页**；去市场入口才开网页。
+  // 按「事件绑定处」定位，而不是模板里 id 首次出现的位置（模板在前，
+  // 那个位置之后的第一个 handler 不是口令按钮的 handler）。
+  const codeHandler = appJs.slice(appJs.indexOf("#addmod-code')"));
+  assert.ok(codeHandler.includes('openInstallCodeModal()'),
+    '口令入口没有调用 openInstallCodeModal');
+  assert.ok(!codeHandler.slice(0, codeHandler.indexOf("#addmod-market')"))
+    .includes('window.open'),
+    '口令入口不该打开市场网页（那是「去市场」入口的职责）');
 });
 
 await c.check('切换页签会加载对应页（switchTab 里两个分支都在）', () => {

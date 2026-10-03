@@ -69,7 +69,10 @@ const document = {
     return [];
   },
   getElementById(id) { if (!byId.has('#' + id)) byId.set('#' + id, makeEl(id)); return byId.get('#' + id); },
-  createElement: () => makeEl(), addEventListener() {}
+  createElement: () => makeEl(), addEventListener() {},
+  removeEventListener() {},
+  // 「扩展」二级菜单靠这个自定义事件在切页时收起自己
+  dispatchEvent() {}
 };
 
 // 真实 fetch（打到真服务）
@@ -101,7 +104,9 @@ const sandbox = {
   // app.js 的 bindSettingsEvents 会往 window 挂 beforeunload 兜底保存 ——
   // vm 的 window 是本 sandbox 自己（无 DOM），补一个空实现让模块加载不崩。
   addEventListener() {}, removeEventListener() {},
-  Event: class { constructor(type, opts = {}) { this.type = type; this.bubbles = !!opts.bubbles; } }
+  Event: class { constructor(type, opts = {}) { this.type = type; this.bubbles = !!opts.bubbles; } },
+  // switchTab 末尾派发 qqagent:tabswitched（供「扩展」二级菜单收起自己）
+  CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;

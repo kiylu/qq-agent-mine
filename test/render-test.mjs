@@ -84,7 +84,9 @@ const document = {
   getElementById: (id) => document.querySelector('#' + id),
   createElement: (tag) => makeEl('', ''),
   addEventListener() {},
-  removeEventListener() {}
+  removeEventListener() {},
+  // 「扩展」二级菜单靠这个自定义事件在切页时收起自己
+  dispatchEvent() {}
 };
 
 // SSE 处理器注册表：桩捕获 connectSSE 绑定的监听，测试可直接派发合成事件
@@ -111,7 +113,12 @@ const sandbox = {
   URL, Blob: function () {}, FileReader: function () {},
   Intl, Math, JSON, Date, Number, String, Object, Array, Map, Set, Boolean, RegExp, Error,
   isNaN, parseInt, parseFloat, encodeURIComponent, decodeURIComponent,
-  structuredClone: (x) => JSON.parse(JSON.stringify(x))
+  structuredClone: (x) => JSON.parse(JSON.stringify(x)),
+  // vm 的 window 就是本 sandbox 自己（无 DOM），补空实现让 11-init 的
+  // initExtSubmenu() 在加载期注册 resize 监听时不崩（与 usage-e2e 同理）。
+  addEventListener() {}, removeEventListener() {},
+  // switchTab 末尾派发 qqagent:tabswitched（供「扩展」二级菜单收起自己）
+  CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;

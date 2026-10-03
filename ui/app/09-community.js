@@ -719,9 +719,12 @@ async function fetchMarketAccounts() {
 }
 
 /**
- * 「添加技能 / 添加插件」入口模态框：上下两个大按钮。
- * 上面 = 去市场（口令安装），悬停文案「捞点好货」；
- * 下面 = 自己造（原创建引导），悬停文案「我去牛逼」。
+ * 「添加技能 / 添加插件」入口模态框：三个大按钮。
+ *
+ * 2026-10-03 拆出「通过口令添加」：原来只有「看看市场」一个去路，它会
+ * **同时**做两件事 —— 打开市场网页 + 弹出口令框。已经把口令拿到手的用户
+ * 只想填代码，却被强行塞了一个网页；网页打不开（离线/被墙）时更是完全卡住。
+ * 现在两个入口各管一件事，想去逛市场和只想输口令互不干扰。
  */
 function openAddModuleModal(kind) {
   const isSkill = kind === 'skill';
@@ -731,10 +734,14 @@ function openAddModuleModal(kind) {
   const overlay = modelModalShell({
     head: `添加${name}`,
     body: `
-      <div class="hint" style="margin-bottom:12px">两种来路：从市场捞现成的，或者自己造一个。</div>
+      <div class="hint" style="margin-bottom:12px">三条来路：手里有口令直接贴，去市场逛着挑，或者自己造一个。</div>
       <div class="addmod-stack">
+        <button class="addmod-big" id="addmod-code">
+          <span class="addmod-label">通过口令添加${name}</span>
+          <span class="addmod-hover-label">我拿好了</span>
+        </button>
         <button class="addmod-big" id="addmod-market">
-          <span class="addmod-label">看看${name}市场</span>
+          <span class="addmod-label">去${name}市场逛逛</span>
           <span class="addmod-hover-label">捞点好货</span>
         </button>
         <button class="addmod-big addmod-diy" id="addmod-diy">
@@ -744,6 +751,12 @@ function openAddModuleModal(kind) {
       </div>`,
     foot: `<button class="btn" id="addmod-cancel">算了</button>`
   });
+  // 口令安装：直接开框，**不**打开任何网页（这是与旧「看看市场」的关键差别）
+  overlay.querySelector('#addmod-code')?.addEventListener('click', () => {
+    closeModelModal(overlay);
+    openInstallCodeModal();
+  });
+  // 去市场：开网页 + 顺带开口令框，保留旧行为（用户明确说了两个入口）
   overlay.querySelector('#addmod-market')?.addEventListener('click', () => {
     closeModelModal(overlay);
     window.open(marketUrl, '_blank', 'noopener');
@@ -769,7 +782,8 @@ function openInstallCodeModal() {
       <div class="hint" style="margin-bottom:10px">
         在市场页找到想要的技能/插件，点「复制口令！」，把得到的口令填进来。
         每行一个；填完一行会自动校验。输完点「就这些吧」批量安装。
-        <span class="muted">（技能口令和插件口令都行 —— 类型由服务器决定，会装进各自的页签）</span>
+        <br /><span class="muted">没口令？先去市场逛逛（<code>技能市场</code> / <code>插件市场</code> 按钮）。</span><br />
+        <span class="muted">技能口令和插件口令都行 —— 类型由服务器决定，会装进各自的页签。</span>
       </div>
       <div id="ic-rows"></div>
       <div class="hint" id="ic-status" style="margin-top:10px"></div>`,

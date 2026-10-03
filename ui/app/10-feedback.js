@@ -640,14 +640,9 @@ function openFeedbackModal() {
   }
 }
 
-// ── 打开网站 ──
-// Electron 里 window.open 会被 main.js 的 setWindowOpenHandler 转给系统默认浏览器；
-// 开发模式（纯浏览器）则正常开新标签页。
-function openSite() {
-  window.open('https://kondius.cn/qq-agent', '_blank', 'noopener');
-}
-
 // ── 自动检查更新 ──
+// ⚠️ 原先这里有个 openSite()（「打开网站！」顶栏按钮，2026-10-03 移除），
+//    删按钮时一并清掉了 —— 留着就成了没人调用的孤本。
 // 节奏：启动时一次 + 之后每小时一次（version.json 作者手动改，这个频率足够）。
 // 有更新 → 弹浮窗引导下载；用户手动关掉浮窗 → 本次启动内不再弹（重启恢复）。
 // 但只要检测到新版，设置侧栏「桌面端」右侧就一直挂红点，直到版本追平。
@@ -850,7 +845,6 @@ async function doUploadQuote(nickname, picked, captchaVerifyParam, overlay, hint
 
 // 顶栏按钮绑定
 $('#feedback-btn')?.addEventListener('click', () => openFeedbackModal());
-$('#open-site-btn')?.addEventListener('click', () => openSite());
 $('#skill-market-btn')?.addEventListener('click', () => window.open('https://www.kondius.cn/qq-agent/skill-market/', '_blank', 'noopener'));
 $('#plugin-market-btn')?.addEventListener('click', () => window.open('https://www.kondius.cn/qq-agent/plugin-market/', '_blank', 'noopener'));
 $('#persona-plaza-btn')?.addEventListener('click', () => window.open('https://www.kondius.cn/qq-agent/persona-plaza/', '_blank', 'noopener'));

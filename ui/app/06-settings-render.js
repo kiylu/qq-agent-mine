@@ -1384,6 +1384,10 @@ function renderModulePage(kind) {
       ? `<button class="mcard-gear" data-skill-id="${esc(s.id)}" title="设置（${allFields.length} 项）" aria-label="打开 ${esc(s.name)} 的设置">⚙</button>`
       : '';
     const uploadBtn = `<button class="mcard-upload" data-skill-id="${esc(s.id)}" data-skill-kind="${kind}" title="上传到市场" aria-label="上传 ${esc(s.name)} 到市场">⬆</button>`;
+    // 删除（卸载）：**不可逆**，所以按钮用危险色 + 二次确认（见 bindModulePageEvents）。
+    const deleteBtn = `<button class="mcard-delete" data-skill-id="${esc(s.id)}" data-skill-kind="${kind}"
+      title="卸载 ${esc(s.name)}（删除它的全部文件，不可恢复）"
+      aria-label="卸载 ${esc(s.name)}">✕</button>`;
     // 缓存影响徽标：只在 danger/warn 时出现（ok 不打扰）；悬停展示完整原因。
     const ci = state.skillCacheImpact?.get(s.id);
     const ciBadge = (ci && ci.level !== 'ok')
@@ -1398,7 +1402,7 @@ function renderModulePage(kind) {
         <div class="mcard-desc">${esc(s.description || '（没有写介绍）')}</div>
         ${errLine ? `<div class="mcard-err">${esc(errLine)}</div>` : ''}
       </div>
-      <div class="mcard-acts">${uploadBtn}${settingsBtn}</div>
+      <div class="mcard-acts">${uploadBtn}${settingsBtn}${deleteBtn}</div>
     </div>`;
   };
 
@@ -1490,6 +1494,43 @@ function bindModulePageEvents(kind) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       openMarketUploadModal(btn.dataset.skillKind || kind, btn.dataset.skillId);
+    });
+  });
+  // 卸载（✕ 钮）：删除**不可逆**，所以要二次确认，且确认文案要说清后果。
+  // stopPropagation 必需 —— ✕ 在卡片内部，不拦住会连带触发整卡开关（把正在删的东西又关了）。
+  scope.querySelectorAll('.mcard-delete').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.skillId;
+      const cur = (state.skills || []).find((s) => s.id === id);
+      const label = cur?.name || id;
+      const kindLabel = (btn.dataset.skillKind || kind) === 'plugin' ? '插件' : '技能';
+      // 二次确认：说清「删什么、删了会怎样、能不能恢复」
+      // ⚠️ uiConfirm 内部会 esc() 转义后再显示，所以这里用纯文本，
+      //    写 markdown 的 ** 只会原样显示成两个星号。
+      const ok = await uiConfirm(
+        `卸载${kindLabel}「${label}」？\n\n` +
+        `这会删除它在磁盘上的整个目录（${kindLabel}代码与配置都会没），无法恢复。\n` +
+        `如果只是想暂时不用，更稳妥的做法是点卡片把它关闭。`,
+        { okText: '确认卸载' }
+      );
+      if (!ok) return;
+      btn.disabled = true;
+      try {
+        const r = await api('/api/skills/uninstall', {
+          method: 'POST',
+          body: JSON.stringify({ id })
+        });
+        if (r.config) state.config = r.config;
+        // 后端已重扫，直接用它回传的列表刷新（少一次往返）
+        if (Array.isArray(r.skills)) state.skills = r.skills;
+        // 整体重拉一次：缓存影响徽标也要重建，否则被删的条目可能还挂着 danger/warn 标记
+        await loadSkillsStatus();
+        renderModulePage(kind);
+      } catch (err) {
+        alert(`卸载失败：${err?.message || err}`);
+        btn.disabled = false;
+      }
     });
   });
   // ── 整卡即开关：点击卡片任意处切换启停（复用原 skill-toggle 的请求链）──

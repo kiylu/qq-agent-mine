@@ -27,6 +27,9 @@ import { builtinVisionResults } from './model-vision-docs.js';
 import { todayKey } from './util.js';
 import { logger } from './logger.js';
 import { skillManager } from './skills/manager.js';
+// 只取目录常量（根目录解析集中在这里，别处不要各自 path.resolve 一份）。
+// plugin-loader 依赖很轻（仅 tool-registry），import 它不会形成循环。
+import { SKILL_DIRS } from './plugin-loader.js';
 import { getSkillConfig, setSkillConfig, setSkillEnabled, listConfiguredSkillIds } from './skills/config.js';
 import { availabilityOf, listTools, CATEGORY_META } from './tool-registry.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
@@ -975,6 +978,68 @@ export function createRoutes(deps) {
           removed: removable,
           skipped: ids.filter((id) => installed.has(id)),
           config: sanitizeConfig(getConfig())
+        });
+      }
+    },
+    {
+      // 卸载（删除）一个技能/插件：删掉它在磁盘上的整个目录。
+      //
+      // 为什么单独一个接口而不是复用 /api/market/install 的反面：
+      //   删除是**不可逆**的（目录直接没了），所以这里做足三道防护 ——
+      //   1) id 白名单字符校验 + 解析后必须仍在对应根目录内（挡 `../` 穿越）；
+      //   2) 必须是**当前已加载**的条目（挡住"删一个不存在的目录"这种误操作，
+      //      也避免把自定义根目录外的路径当扩展删）；
+      //   3) 前端必须二次确认（UI 层），这里是最后一道。
+      //
+      // 顺带清掉 config.skills.<id>，否则会立刻变成"已配置但未安装"的残留项
+      // 出现在技能页（用户刚删掉却又看见一条幽灵条目）。
+      method: 'POST', pattern: '/api/skills/uninstall',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const id = String(body?.id || '').trim();
+        if (!id) return json(res, 400, { ok: false, error: '缺少 id' });
+        // 只允许安全 id 字符：字母数字 . _ -（与清单 id 的正则同族，见 manifest.js）
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) {
+          return json(res, 400, { ok: false, error: `id 含有非法字符：${id}` });
+        }
+        // 必须已加载：既确认存在，也顺带确认 kind 属于技能还是插件
+        const entry = skillManager.list().find((s) => s.id === id);
+        if (!entry) return json(res, 404, { ok: false, error: '条目不存在或未加载' });
+        const kind = entry.kind === 'plugin' ? 'plugin' : 'skill';
+        const root = kind === 'plugin' ? SKILL_DIRS.plugins : SKILL_DIRS.skills;
+        const target = path.resolve(root, id);
+        // 解析后必须仍在根目录内（双重保险：正则已挡住 ../，这里再确认一次）
+        if (path.dirname(target) !== path.resolve(root)) {
+          return json(res, 400, { ok: false, error: '目标路径非法' });
+        }
+        if (!fs.existsSync(target)) {
+          return json(res, 404, { ok: false, error: '目录不存在（可能已被手动删除）' });
+        }
+        try {
+          fs.rmSync(target, { recursive: true, force: true });
+        } catch (error) {
+          return json(res, 500, { ok: false, error: `删除失败：${String(error?.message ?? error)}` });
+        }
+        // 配置残留一并清掉：删除是不可逆的，留着开关/设置毫无意义
+        const skillsCfg = { ...(getConfig()?.skills || {}) };
+        if (skillsCfg[id]) {
+          delete skillsCfg[id];
+          updateConfig({ skills: { __replace__: skillsCfg } });
+        }
+        // 重扫让列表立刻反映结果；失败不阻断（目录已删，下次手动刷新也会对）
+        let rescanned = true;
+        try {
+          if (typeof reloadSkills === 'function') await reloadSkills({ reason: 'manual-uninstall' });
+        } catch { rescanned = false; }
+        const context = skillRuntimeContext();
+        return json(res, 200, {
+          ok: true,
+          id,
+          kind,
+          rescanned,
+          config: sanitizeConfig(getConfig()),
+          skills: skillManager.list(context),
+          summary: skillManager.summary(context)
         });
       }
     },

@@ -319,6 +319,48 @@ a, button, input, textarea, select, summary,
   color: var(--tx);
   box-shadow: inset 0 -2px 0 var(--ac);
 }
+
+/* 「扩展」页签：带下拉的父级触发器。
+   顶栏本来有 8 个页签（技能+插件各占一个），挤得慌；合并成「扩展」一个入口后
+   这里补一个小箭头提示"点开有二级"，展开时箭头翻转。 */
+.tab.has-sub { display: inline-flex; align-items: center; gap: 4px; }
+.tab-caret {
+  width: 0; height: 0; flex: 0 0 auto;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid currentColor;
+  opacity: .55;
+  transition: transform var(--dur-fast) var(--ease-out-quart), opacity var(--dur-fast) var(--ease-in-out);
+}
+.tab.ext-open .tab-caret { transform: rotate(180deg); opacity: .9; }
+
+/* 二级选择器：贴顶栏下沿、随内容淡入下压。
+   用 fixed? 不 —— 顶栏有滚动容器，fixed 难以对齐；这里用 absolute 挂在 body 上，
+   坐标由 JS 在展开时按页签实测位置写入（见 11-init.js · positionExtSubmenu）。 */
+.ext-submenu {
+  position: absolute; z-index: 60;
+  min-width: 232px; padding: 5px;
+  border: 1px solid var(--bd2); border-radius: var(--r-lg);
+  background: var(--bg1);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+  animation: extMenuIn var(--dur-base) var(--ease-out-quart);
+}
+.ext-submenu[hidden] { display: none; }
+@keyframes extMenuIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.ext-subitem {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; padding: 8px 10px;
+  border: none; border-radius: var(--r-md);
+  background: none; cursor: pointer; text-align: left;
+  transition: background var(--dur-fast) var(--ease-in-out);
+}
+.ext-subitem:hover { background: var(--bg2); }
+.ext-subitem-title { font-size: 13px; font-weight: 600; color: var(--tx); }
+.ext-subitem-desc { font-size: 11.5px; color: var(--tx3); line-height: 1.4; }
+.ext-subitem:hover .ext-subitem-title { color: var(--ac); }
 .nav-btn {
   height: 26px; padding: 0 11px; border-radius: var(--r-full); flex: 0 0 auto;
   font-size: 12px; font-weight: 600; color: var(--tx2);
@@ -328,10 +370,6 @@ a, button, input, textarea, select, summary,
 .nav-btn:hover { color: var(--tx); border-color: var(--bd2); }
 .nav-btn.nav-btn-market, .nav-btn.nav-btn-primary { color: var(--ac); border-color: var(--ac-line); }
 .nav-btn.nav-btn-persona { color: var(--warn); border-color: var(--warn-line); }
-.nav-btn.nav-btn-hot {
-  background: var(--ac); border-color: var(--ac); color: #fff;
-}
-.nav-btn.nav-btn-hot:hover { filter: brightness(1.08); color: #fff; }
 
 /* 主布局：必须吃满剩余高度并禁止溢出，
    否则 .view / 列表 / 详情的高度链断裂 —— 两栏都被锁成单屏无法滚动 */
@@ -1008,6 +1046,20 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
   display: grid; place-items: center; font-size: 16px;
 }
 .mcard-gear:hover, .mcard-upload:hover { background: var(--ac); color: #fff; border-color: var(--ac); }
+
+/* 卸载（✕）：不可逆操作，所以常态低调（中性描边）、悬停才变红。
+   不做成常红 —— 卡片上一排红按钮会让人不敢碰整张卡。 */
+.mcard-delete {
+  width: 36px; height: 36px; border-radius: var(--r-sm);
+  border: 1px solid var(--bd2); background: var(--bg2); color: var(--tx3);
+  display: grid; place-items: center; font-size: 15px; line-height: 1;
+  transition: color var(--dur-fast) var(--ease-in-out),
+              border-color var(--dur-fast) var(--ease-in-out),
+              background var(--dur-fast) var(--ease-in-out);
+}
+.mcard-delete:hover { background: var(--err); color: #fff; border-color: var(--err); }
+.mcard-delete:disabled { opacity: .45; cursor: not-allowed; }
+.mcard-delete:disabled:hover { background: var(--bg2); color: var(--tx3); border-color: var(--bd2); }
 
 /* ══ 8. 设置页 ══ */
 .settings-sidebar {
