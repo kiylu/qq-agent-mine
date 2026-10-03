@@ -1,0 +1,33 @@
+{
+  "id": "conversation-memory-lite",
+  "name": "分层会话记忆 · 精简版",
+  "version": "1.1.0",
+  "apiVersion": 1,
+  "category": "knowledge",
+  "description": "后台把聊天压成小时块索引，让模型能回忆很久以前的事。零注入、平时不进提示词、不花 token，只有模型主动检索旧事时才检索。已移除每轮注入（那是击穿前缀缓存的元凶，且与会话延续重复）。",
+  "author": "QQ Agent",
+  "enabledByDefault": true,
+  "capabilities": [
+    "memory.search",
+    "memory.archive",
+    "memory.status"
+  ],
+  "requires": [],
+  "settings": {
+    "enabled": true,
+    "consolidateIntervalMin": 10
+  },
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "label": "启用会话记忆",
+      "description": "关掉后不再后台巩固；已生成的索引留在磁盘上不会删。检索工具也会随之不可用（技能页会显示「依赖未就绪」）。"
+    },
+    "consolidateIntervalMin": {
+      "type": "number",
+      "label": "巩固间隔（分钟）",
+      "description": "后台把新消息压成小时块的间隔，默认 10 分钟。只在有新增时才写盘。"
+    }
+  },
+  "prompt": null
+}

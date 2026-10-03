@@ -5,5 +5,5 @@
 // 表现是"实例 #2 的记忆写进了 #1 的目录"，两个机器人的记忆互相污染，且极难发现。
 // 所以这里直接复用核心的导出，唯一真源。
 //
-// lib/ → conversation-memory/ → plugins/ → 仓库根
+// lib/ → conversation-memory-lite/ → plugins/ → 仓库根
 export { DATA_DIR, ROOT } from '../../../src/config.js';

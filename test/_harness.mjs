@@ -62,6 +62,14 @@ export function listen(server) {
 export function makeDataDir(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   process.env.QQ_AGENT_DATA_DIR = dir;
+  // 扩展目录隔离（同 selftest 的理由）：测试只验证核心，不该被用户装的
+  // plugins/skills 影响（例如 conversation-memory 改写 system 会破坏
+  // "延续轮 messages 逐字节前缀"这类核心断言）。指向空目录 = 没装任何扩展。
+  if (!process.env.QQ_AGENT_SKILLS_DIR) {
+    const ext = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}ext-`));
+    process.env.QQ_AGENT_SKILLS_DIR = path.join(ext, 'skills');
+    process.env.QQ_AGENT_PLUGINS_DIR = path.join(ext, 'plugins');
+  }
   return dir;
 }
 

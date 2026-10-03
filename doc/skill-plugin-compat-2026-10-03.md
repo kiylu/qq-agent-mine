@@ -103,7 +103,8 @@ GET /api/skills/cache-impact?onlyActive=0 # 连未启用的也一起体检（排
     "id": "xxx", "name": "xxx",
     "dynamicSections": true,        // promptSections 随上下文变化
     "sectionSample": [{ "id": "...", "title": "..." }],
-    "systemRewriteHook": false,     // before-llm-messages 改写了既有 system 消息
+    "systemRewriteHook": false,     // 运行时探测到 hook 改写了既有 system 消息
+    "staticSystemWrite": true,      // 静态扫描：源码里有 system 改写模式（数据依赖型）
     "pushOnlyHook": true,           // 只 push 新消息（无害，但注入内容需稳定）
     "unstableAvailable": false,     // available() 连续两次结果不一致
     "level": "warn",                // ok | warn | danger
@@ -118,9 +119,17 @@ GET /api/skills/cache-impact?onlyActive=0 # 连未启用的也一起体检（排
 | 检测项 | 方法 | 命中后果 |
 |---|---|---|
 | `dynamicSections` | 用两个明显不同的上下文各跑一次 `promptSections(ctx)`，比对输出指纹 | **danger**：每轮 fresh（丢上下文）+ 缓存全不命中 |
-| `systemRewriteHook` | 造一条最小 messages（index0=system）跑一次 hook，比对既有的 index0 是否被改动 | **danger**：不触发 fresh，但击穿前缀缓存、每轮全价，界面无提示 |
+| `systemRewriteHook` | 造一条最小 messages（index0=system）跑一次 hook（**await 结果**），比对既有的 index0 是否被改动 | **danger**：不触发 fresh，但击穿前缀缓存、每轮全价，界面无提示 |
+| `staticSystemWrite` | 读入口源码（含同目录 `lib/*.js`），找 `role === 'system'` + `content +=`／`.content.push` 组合 | **danger**：同 `systemRewriteHook`，用于补"数据依赖型"漏检 |
 | `pushOnlyHook` | hook 只新增消息、未改既有 system | **warn**：对延续无害；注入内容若每轮不同仍击穿下一轮缓存 |
 | `unstableAvailable` | 连续两次 `available()` 结果比对 | **warn**：工具集抖动 → fresh |
+
+**为什么有两套 `systemRewrite` 判据**（2026-10-03 补）：
+- **运行时探测**只能看到"这次试跑实际发生的改动"。像 `conversation-memory` 这类
+  **数据依赖型** hook（待办/跨轮/语义卡为空时什么都不注入）在冷启动试跑下**零改写**，
+  会漏检 —— 但真实运行时有内容时就会改写。
+- **静态扫描**读源码找同款写法，把这类漏网之鱼捞回来。代价是可能误报
+  （比如"取 system 只为读、不写"的实现），所以提示里标明"此判据为静态扫描"。
 
 检测**不调用大模型**，纯确定性；属启发式，可能有误报（如依赖时间戳的实现），
 因此只作为**提示**——`ok` 不显示徽标，`warn`/`danger` 才在技能卡片名后出现徽标。
@@ -144,3 +153,52 @@ GET /api/skills/cache-impact?onlyActive=0 # 连未启用的也一起体检（排
   成为下一轮的前缀。若注入内容每轮不同，虽不触发 `systemPrompt` 比较（不判 fresh），
   但会**击穿下一轮的前缀缓存命中**（前缀字节变了）。稳妥做法：注入内容保持稳定，
   或只追加到末尾、不改动已有条目的字节。
+
+---
+
+## 七、测试与扩展的隔离（2026-10-03 补）
+
+**现象**：装上 `conversation-memory` 后，核心测试 `selftest` 的
+"drain 运行应延续同一会话（messages 逐字节前缀）"断言失败。
+
+**根因**：`plugin-loader.js` 的 `skills/`、`plugins/` 根目录硬编码在 `APP_ROOT` 下，
+测试只隔离了数据目录（`QQ_AGENT_DATA_DIR`），**没隔离扩展目录** ——
+用户装任何插件，核心断言就会被该插件的行为（此处是改写 system）影响，
+把"用户环境"和"代码正确性"搅在一起。
+
+**修复**：
+- `SKILLS_DIR` / `PLUGINS_DIR` 支持 `QQ_AGENT_SKILLS_DIR` / `QQ_AGENT_PLUGINS_DIR`
+  环境变量覆盖（与 `QQ_AGENT_DATA_DIR` 同一约定）。
+- `test/selftest.mjs`、`test/_harness.mjs`（`makeDataDir`）默认把扩展目录指向空临时目录。
+- `test/continuation-e2e-test.mjs` 场景 9 的探针写入**隔离**技能目录，不再污染 `ROOT/skills`。
+- `tools-skill-audit` **从 `npm test` 主链移出**：它审计的是"已装扩展"的质量，
+  装了不达标插件必红 —— 那是扩展问题，不是核心回归。改为 `npm run test:audit` 单独跑。
+
+**效果**：`npm test` 与"用户装了什么扩展"彻底解耦。
+
+---
+
+## 八、既有扩展的清理与精简（2026-10-03 收尾）
+
+体检工作台跑出来后，`conversation-memory` 被判 `danger`：它在 `before-llm-messages`
+每轮把待办/跨轮/语义卡/跨群**追加进既有 system 消息**，内容每轮变 → 击穿前缀缓存
+且不触发 fresh；而它的作用（"上一轮想到哪了"）与本工程的**会话延续**高度重复。
+
+按"只留需要的功能"原则做的处理：
+
+- 删掉除会话记忆外的全部第三方扩展（`budget-guard`、`owner-identity`、
+  `jm-comic`、`pixiv-image-tagsearch`）；`skills/` 现为空。
+- `conversation-memory` → **`conversation-memory-lite`**（分层会话记忆 · 精简版）：
+  - **保留**：后台小时块索引 + 模型主动检索（`memory.search` / `memory.archive` /
+    `memory.status`），零注入、非检索不花 token。
+  - **移除**：`before-context` / `before-llm-messages` / `after-response` 三个注入类
+    hooks，以及 `arch.js`、`cost-guard.js`、`cross-turn.js`、`cross-chat.js`、
+    `semantic-cards.js`、`pending.js`、`sensory.js`、`working.js` 八个模块。
+  - 结果：同一套体检从 `danger` → **`ok`**（`staticSystemWrite=false` /
+    `systemRewriteHook=false`），检索能力不变。
+
+**经验**：`hooks = {}` 也是有效形态 —— 插件可以只提供 `providers` 能力而不挂任何 hook。
+
+---
+
+## 九、给外部开发者的结论

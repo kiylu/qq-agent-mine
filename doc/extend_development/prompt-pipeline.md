@@ -22,7 +22,7 @@
 ## 第 2 步：before-context 钩子（orchestrator.js:648）
 
 Skill 在提示词组装前跑一次 `before-context`。
-目前只有 conversation-memory 用它暂存"本轮触发内容"（triggerEntries），供第 7 步注入用。
+目前没有插件使用它（曾用于暂存"本轮触发内容"供注入，注入链路已随 conversation-memory-lite 精简移除）。
 钩子 5 秒超时，只能追加/加工上下文，不能碰核心提示词。
 
 ## 第 3 步：主人识别（orchestrator.js:662）
@@ -95,8 +95,9 @@ proactive 运行在 user 消息末尾追加「（主动机会）群里已经安�
 
 唯一能改"已拼好 messages"的扩展点：
 
-- **conversation-memory**：`appendToSystem` 把跨轮记忆**追加到既有 system 消息 content 尾部**（修改既有消息）
-- **knowledge-memes**：知识库联想命中时 **push 一条新 system 消息**【脑内闪过】
+- **conversation-memory-lite**：**不再使用本钩子**。精简版移除了每轮注入（那是击穿前缀缓存的元凶，且与会话延续功能重复），只保留后台索引 + 模型主动检索。
+- 反例：改写既有 system 消息（`sys.content += ...`）会击穿前缀缓存且**不**触发 fresh 逻辑，成本成倍 —— 见 `doc/skill-plugin-compat-2026-10-03.md` 的缓存影响体检。
+- **knowledge-memes**：知识库联想命中时 **push 一条新 system 消息**【脑内闪过】（push 式，安全）
 
 组装结果同时写入 `session.systemPrompt / userPrompt / inputMessages`（UI 与调试可见）。
 

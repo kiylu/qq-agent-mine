@@ -13,6 +13,7 @@
 //   禁用 Skill 一定调 deactivate（清监听器/定时器/注册的工具），
 //   不能只在前端把 checkbox 取消 —— 否则会留下幽灵行为。
 
+import fs from 'node:fs';
 import { SkillRegistry } from './registry.js';
 import { CapabilityRegistry } from './capabilities.js';
 import { SKILL_ERROR, SkillError, skillErrorText } from './errors.js';
@@ -539,14 +540,15 @@ export class SkillManager {
    *   id: string,
    *   dynamicSections: boolean,            // promptSections 随上下文变化
    *   sectionSample: {id:string,title:string}[] | null, // 动态段样例（前 3 条）
-   *   systemRewriteHook: boolean,          // before-llm-messages 改写了既有 system 消息
+   *   systemRewriteHook: boolean,          // before-llm-messages 改写了既有 system 消息（运行时探测到）
+   *   staticSystemWrite: boolean,          // 静态扫描：源码里有 system 改写模式（数据依赖型，试跑观察不到）
    *   pushOnlyHook: boolean,               // before-llm-messages 只 push 新消息（无害）
    *   unstableAvailable: boolean,          // available() 连续两次结果不一致
    *   level: 'ok'|'warn'|'danger',
    *   notes: string[]
    * }}
    */
-  cacheImpactOf(id, baseContext = {}) {
+  async cacheImpactOf(id, baseContext = {}) {
     const skill = this.registry.get(String(id));
     const notes = [];
     if (!skill) {
@@ -593,32 +595,39 @@ export class SkillManager {
     }
 
     // ── 检测 2：before-llm-messages 是否改写既有 system 消息 ──────────────
+    //
+    // ⚠️ 必须 await：大量 hook 用 `async` 声明（比如 conversation-memory），
+    //    调用后立刻返回 Promise，同步读 messages 会**永远看到未改动的原样** ——
+    //    这正是本检测第一版漏报的原因（异步 hook 一律判"无法同步判定"）。
+    //    这里用 #withTimeout 兜底（与 runHook 同一套超时语义），
+    //    异步实现也能拿到真实的 messages 快照。
     let systemRewriteHook = false;
     let pushOnlyHook = false;
+    let hookAsync = false;
     const hookFn = skill.hooks?.['before-llm-messages'];
     if (typeof hookFn === 'function') {
       // 造一条最小可辨识的 messages：index0 = system，index1 = user。
       // 用 structuredClone 语义的快照比对，能同时捕捉 content 改写、
       // role 改写、给 system 消息附加字段、以及"替换掉 index0"等情况。
       const sysText = '__CACHE_PROBE_SYSTEM__';
-      const build = () => ([
+      const messages = [
         { role: 'system', content: sysText },
         { role: 'user', content: '__CACHE_PROBE_USER__' }
-      ]);
-      let r;
-      const messages = build();
+      ];
+      let error = null;
       try {
         const out = hookFn({ ...ctxA, messages }, { skillId: skill.manifest.id });
-        // 异步 hook：不阻塞 HTTP，交给人工/异步通道判定
-        r = (out && typeof out.then === 'function') ? { async: true } : { async: false, messages };
-      } catch (error) {
-        this.#warn(skill.manifest.id, 'before-llm-messages 体检失败', error);
-        r = { error: true };
+        if (out && typeof out.then === 'function') {
+          hookAsync = true;
+          // 超时兜底：卡死的 hook 不能拖垮整个体检接口
+          await this.#withTimeout(Promise.resolve(out), skill.manifest.id);
+        }
+      } catch (err) {
+        error = err;
+        this.#warn(skill.manifest.id, 'before-llm-messages 体检失败', err);
       }
-      if (r.async) {
-        notes.push('before-llm-messages 为异步实现，无法同步判定是否改写 system（建议人工确认）');
-      } else if (!r.error) {
-        const after = r.messages;
+      if (!error) {
+        const after = messages;
         const sys0 = after[0];
         // 既有 system 是否被改动：要么 index0 不再是同一条 system，要么内容变了
         const sysChanged = !(
@@ -634,6 +643,8 @@ export class SkillManager {
         } else if (lenChanged) {
           pushOnlyHook = true;
           notes.push('before-llm-messages 只新增消息（未改动既有 system）：对会话延续无害；但注入内容若每轮不同，仍会击穿下一轮前缀缓存');
+        } else if (hookAsync) {
+          notes.push('before-llm-messages 为异步实现，本轮探测未观察到对 messages 的改写（异步副作用若晚于 await 仍可能漏检）');
         }
       }
     }
@@ -656,7 +667,32 @@ export class SkillManager {
       }
     }
 
-    const level = (dynamicSections || systemRewriteHook) ? 'danger'
+    // ── 检测 4：静态扫描（补运行时探测的盲区）─────────────────────────────
+    //
+    // 为什么需要：有些 hook 只在"有内容可注入"时才改写 system（典型如
+    // conversation-memory —— 待办/跨轮/语义卡为空时它什么都不改）。
+    // 空上下文试跑观察不到，但真实运行时会改写 → 属于漏检。
+    // 这里读入口源码，找"取到 system 消息并原地增量修改"的写法。
+    // 仅作启发式：命中即提醒，不 100% 断定。
+    let staticSystemWrite = false;
+    if (!systemRewriteHook && !pushOnlyHook) {
+      const src = this.#readEntrySource(skill);
+      if (src) {
+        // 形态：找到系统消息（messages.find(... role === 'system') / for 循环里判 role）
+        // 后对它做增量修改（content += / content.push / content = ...）。
+        // 正则不做括号配平（探测是启发式）：两条判据在同一文件里都出现即认为可疑。
+        const findsSystem = /role\s*===?\s*['"]system['"]/.test(src)
+          || /find\s*\([^)]*['"]system['"]/.test(src);
+        const mutatesContent = /\bcontent\s*\+=/.test(src)
+          || /\.content\.push\s*\(/.test(src);
+        if (findsSystem && mutatesContent) {
+          staticSystemWrite = true;
+          notes.push('源码里存在"取 system 消息再原地修改 content"的写法（role === "system" + content 增量变更）：真实运行时若注入了内容，会击穿 system 之后的前缀缓存；空上下文试跑观察不到（数据依赖），此判据为静态扫描');
+        }
+      }
+    }
+
+    const level = (dynamicSections || systemRewriteHook || staticSystemWrite) ? 'danger'
       : (pushOnlyHook || unstableAvailable) ? 'warn' : 'ok';
     if (level === 'ok') notes.push('未发现影响会话延续/缓存复用的实现特征');
 
@@ -666,6 +702,7 @@ export class SkillManager {
       dynamicSections,
       sectionSample,
       systemRewriteHook,
+      staticSystemWrite,
       pushOnlyHook,
       unstableAvailable,
       level,
@@ -674,7 +711,7 @@ export class SkillManager {
   }
 
   /** 批量体检（默认只体检当前生效中的 Skill，避免噪音）。 */
-  cacheImpactReport(baseContext = {}, { onlyActive = true } = {}) {
+  async cacheImpactReport(baseContext = {}, { onlyActive = true } = {}) {
     const out = [];
     for (const skill of this.registry.list()) {
       if (!skill.manifest?.id) continue;
@@ -683,7 +720,7 @@ export class SkillManager {
         // 加载失败/未启用的不体检：它们眼下不参与组装，报告里略过即可
         if (!st.active) continue;
       }
-      out.push(this.cacheImpactOf(skill.manifest.id, baseContext));
+      out.push(await this.cacheImpactOf(skill.manifest.id, baseContext));
     }
     const summary = {
       total: out.length,
@@ -712,6 +749,30 @@ export class SkillManager {
   recordError(id, error) {
     const msg = String(error?.message ?? error ?? '').slice(0, 300);
     if (msg) this.errors.set(String(id), msg);
+  }
+
+  /**
+   * 读 Skill 入口源码（静态扫描用）。
+   * 只读入口文件 + 它同目录的 1 层 lib/（常见写法把逻辑拆到 lib/），
+   * 拼成一段文本供正则匹配；读失败返回空串（静态扫描是增强，不是必需）。
+   */
+  #readEntrySource(skill) {
+    const parts = [];
+    const readOne = (p) => {
+      try {
+        const st = fs.statSync(p);
+        if (!st.isFile() || st.size > 512 * 1024) return;   // 跳过超大文件
+        parts.push(fs.readFileSync(p, 'utf8'));
+      } catch { /* 读不到就跳过 */ }
+    };
+    if (typeof skill.entryPath === 'string' && skill.entryPath) readOne(skill.entryPath);
+    if (typeof skill.dir === 'string' && skill.dir) {
+      const libDir = `${skill.dir}/lib`;
+      let names = [];
+      try { names = fs.readdirSync(libDir); } catch { names = []; }
+      for (const n of names) if (n.endsWith('.js')) readOne(`${libDir}/${n}`);
+    }
+    return parts.join('\n');
   }
 
   #warn(id, message, error) {

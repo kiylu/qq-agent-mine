@@ -1056,7 +1056,7 @@ export function createRoutes(deps) {
       handler: async ({ req, res, json, url }) => {
         const context = skillRuntimeContext();
         const onlyActive = url?.searchParams?.get('onlyActive') !== '0';
-        const report = skillManager.cacheImpactReport(context, { onlyActive });
+        const report = await skillManager.cacheImpactReport(context, { onlyActive });
         return json(res, 200, { ok: true, ...report });
       }
     },

@@ -6,7 +6,6 @@ import path from 'node:path';
 import { LongTermStore, hourChunkId, hourKeyOf, timeOfDayOf } from './longterm.js';
 import { Hippocampus, buildHit } from './hippocampus.js';
 import { tokenize } from './tokenize.js';
-import { ingestSemanticFromHour } from './arch.js';
 
 function messagesFile(messagesDir, chatKey) {
   const safe = String(chatKey).replace(/[^a-z0-9_]/gi, '_');
@@ -129,8 +128,6 @@ export class Consolidator {
       const chunk = this.#buildHourChunk(chatKey, hourKey, hourMsgs);
       this.longterm.writeChunk(chunk);
       this.hippo.indexChunk(chunk);
-      // 语义卡片：本地启发式，失败忽略
-      try { ingestSemanticFromHour(chatKey, chunk.snippets); } catch { /* ignore */ }
       meta.dayKeys[String(hourKey).slice(0, 10)] = true;
       chunkCount += 1;
     }

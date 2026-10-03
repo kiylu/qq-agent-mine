@@ -38,8 +38,17 @@ import { skillErrorText } from './skills/errors.js';
 // **静默加载 0 个**（既不报错也不打日志，排查成本极高）。
 // 项目内其它模块（app.js 的 UI_DIR、config.js 的 ROOT）都是同一约定。
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKILLS_DIR = path.resolve(APP_ROOT, 'skills');
-const PLUGINS_DIR = path.resolve(APP_ROOT, 'plugins');
+// 允许用环境变量覆盖扩展根目录（与 QQ_AGENT_DATA_DIR 同一约定）。
+// 存在的意义：核心测试（selftest 等）必须能在**不加载用户真实插件**的前提下跑 ——
+// 否则用户装任何一个插件，核心断言（如"延续轮 messages 逐字节前缀"）就会因
+// 插件改写 system 而假失败，把"用户环境"和"代码正确性"搅在一起。
+// 测试里设 QQ_AGENT_SKILLS_DIR / QQ_AGENT_PLUGINS_DIR 指向空目录即可隔离。
+const SKILLS_DIR = process.env.QQ_AGENT_SKILLS_DIR
+  ? path.resolve(process.env.QQ_AGENT_SKILLS_DIR)
+  : path.resolve(APP_ROOT, 'skills');
+const PLUGINS_DIR = process.env.QQ_AGENT_PLUGINS_DIR
+  ? path.resolve(process.env.QQ_AGENT_PLUGINS_DIR)
+  : path.resolve(APP_ROOT, 'plugins');
 
 /**
  * 旧插件清单的 prompt 是 `{ when, examples[], instruction }` 形态，
@@ -419,6 +428,9 @@ async function loadSkillDir(dir, { log = console.log, kind = null } = {}) {
     manifest,
     source: found.source,
     dir,
+    // 入口文件的绝对路径：缓存影响体检要做静态扫描（异步 hook 的副作用
+    // 无法靠"空上下文试跑"观察到），需要读源码。
+    entryPath,
     // 仓库相对目录 + 目录语义类型，供状态视图/UI/审计使用
     relDir: path.relative(APP_ROOT, dir).replace(/\\/g, '/'),
     // 目录语义类型：'plugin'（确定性型）/ 'skill'（LLM 型）/ null（自定义根，不判定）

@@ -219,8 +219,8 @@ export function buildSystemPrompt({ persona, skillContext, extraSections = [] } 
   // 与 Skill 自己声明的 prompt.sections 走同一条渲染路径 —— 都排在核心规则之后，
   // 且不参与 skillManager 的开关判断（调用方已经判断过了）。
   //
-  // ⚠️ 前缀缓存：skillSections 含"随会话变化"的动态内容时（conversation-memory
-  //    的每轮注入、knowledge-memes 的脑内闪过），必须**追加到系统提示末尾**而不是
+  // ⚠️ 前缀缓存：skillSections 含"随会话变化"的动态内容时（如 knowledge-memes
+  //    的脑内闪过），必须**追加到系统提示末尾**而不是
   //    插在中间 —— 插在中间会把后面所有核心规则的字节位置推来推去，系统提示的
   //    缓存前缀（通常占 token 大头）直接归零。核心静态段全部在前，动态段殿后。
   const skillSections = [...collectSkillSections(skillContext || {}), ...(Array.isArray(extraSections) ? extraSections : [])]

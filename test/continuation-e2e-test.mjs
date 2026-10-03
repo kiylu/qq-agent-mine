@@ -219,7 +219,11 @@ await check('思维链接口在没有缓冲时返回空数组（不报错）', a
 // 但它是"外部 Skill × 会话延续"的真实冲突面。这里用护栏锁住现状：
 // 若将来把比较逻辑改成"只比核心前缀"，这条会变成 pass，届时可放宽。
 await check('Skill 动态提示词段变化时走 fresh（已知行为，护栏）', async () => {
-  const skillDir = path.join(ROOT, 'skills', 'cont-brake-probe');
+  // ⚠️ 探针必须写进**本次测试的隔离扩展目录**（QQ_AGENT_SKILLS_DIR），
+  //    不能写 ROOT/skills —— 否则 (a) 污染用户真实技能目录，
+  //    (b) 被 harness 的目录隔离挡在外面，reloadSkills 根本加载不到它。
+  const skillsRoot = process.env.QQ_AGENT_SKILLS_DIR || path.join(ROOT, 'skills');
+  const skillDir = path.join(skillsRoot, 'cont-brake-probe');
   try {
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(path.join(skillDir, 'skill.json'), JSON.stringify({

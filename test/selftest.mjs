@@ -215,6 +215,13 @@ function pass(name, extra = '') {
 async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-agent-test-'));
   process.env.QQ_AGENT_DATA_DIR = dataDir;
+  // 隔离扩展目录：核心审计只验证**核心**行为，不能被用户装的 plugins/skills 干扰。
+  // 典型：conversation-memory 的 before-llm-messages 会改写 system，
+  // 使"延续轮 messages 逐字节前缀"断言失败 —— 那是插件行为，不是核心回归。
+  // 指向空临时目录 = 等价于"没装任何扩展"。
+  const emptyExt = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-agent-ext-'));
+  process.env.QQ_AGENT_SKILLS_DIR = path.join(emptyExt, 'skills');
+  process.env.QQ_AGENT_PLUGINS_DIR = path.join(emptyExt, 'plugins');
 
   const onebotHttp = createMockOneBotHttp();
   PORTS.onebotHttp = await listen(onebotHttp.server);
