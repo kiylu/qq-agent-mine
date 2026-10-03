@@ -54,9 +54,24 @@ function allowed(kind, id, cfg) {
 }
 
 // ── 版本更新检查 ─────────────────────────────────────────────────────
-// 线上版本信息只有一份：kondius.cn/qq-agent/version.json（发版时手动改）。
+// 线上版本信息只有一份：**本仓库自己的 GitHub Releases**（发版时由 scripts/release.mjs
+// 打 tag + 传产物，Release 一发布这里就自动有了）。
 // 由后端代取而不是前端直连：绕过 CORS，且失败信息能统一回给 UI。
-const UPDATE_INFO_URL = 'https://kondius.cn/qq-agent/version.json';
+//
+// 为什么不用 electron-updater：那是给 NSIS 安装包做差分更新的，
+// 本项目对外分发的是 pack-release.mjs 产出的 zip（解压覆盖式），用不了。
+const UPDATE_RELEASE_API =
+  'https://api.github.com/repos/kiylu/qq-agent-mine/releases/latest';
+/** Release 页（下载失败时让人能自己去捞）。 */
+const UPDATE_RELEASE_PAGE = 'https://github.com/kiylu/qq-agent-mine/releases/latest';
+/** 产物名字里的版本段：qq-agent-0.4.0-2026-10-03-full.zip → 认这段。 */
+const UPDATE_ASSET_VERSION_RE = /qq-agent-(\d+\.\d+\.\d+)-/;
+
+/** 归一化版本号：'v1.1.1' / 'V1.1.1' / '1.1.1' → '1.1.1'。
+ *  tag 习惯带 v 前缀，但 package.json.version 不带，比对前必须统一去掉。 */
+function normalizeVersion(v) {
+  return String(v || '').trim().replace(/^[vV]/, '');
+}
 
 function localVersion() {
   try {
@@ -1290,7 +1305,8 @@ export function createApp({ log = console.log } = {}) {
   const apiRoutes = createRoutes({
     store, memory, sessions, onebot, orchestrator,
     emit, log,
-    localVersion, compareSemver, UPDATE_INFO_URL,
+    localVersion, compareSemver, normalizeVersion,
+    UPDATE_RELEASE_API, UPDATE_RELEASE_PAGE, UPDATE_ASSET_VERSION_RE,
     sanitizeConfig, keyEndpointAllowed, sanitizeProvider,
     readBody, authorize,
     snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaWebuiPort, snowlumaStatus, snowlumaLogs,

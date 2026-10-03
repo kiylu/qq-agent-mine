@@ -221,6 +221,90 @@ node scripts/sanitize-release.mjs --dry-run   # 先看会清理什么
 node scripts/sanitize-release.mjs             # 清空 Key / 白名单 / 存档 / 登录态
 ```
 
+### 发版流程（维护者看）
+
+版本检查更新走的是**本仓库自己的 GitHub Releases**（2026-10-03 起，不再依赖任何外部 version.json）。
+下面是没发过 Release 的话，从零走一遍。
+
+#### 前置：一次性准备
+
+1. **装 GitHub CLI**（只有发版需要，单纯用程序不需要）：
+   ```bash
+   winget install GitHub.cli      # Windows
+   brew install gh                 # macOS
+   ```
+2. **登录一次**（会问浏览器授权）：
+   ```bash
+   gh auth login
+   gh auth setup-git               # 让 git push 也能用，凭据统一
+   ```
+3. **确认仓库是公开的**（Settings → General → Danger Zone → Change visibility → Public）。
+   私有仓库的 Release 需要额外配 token 才能被程序读到。
+
+#### 版本号与 tag 的关系
+
+**版本号只有一个地方写：`package.json` 的 `version`。** 不要手打 tag。
+
+```
+package.json version = 1.1.1   →   tag = v1.1.1   →   Release 标题 = v1.1.1
+```
+
+tag 固定是 `v` + 三段纯数字（`v1.1.1` / `v1.2.0` / `v2.0.0`）：
+
+- **为什么带 `v`**：GitHub 惯例，Releases 页面会自动识别为 release tag。
+- **为什么只有三段、不能带日期**：程序比较版本用的是 `compareSemver`（只取前三段数字），
+  `v1.1.1-2026-10-03` 这种多段串会被误解析。日期已经在产物名里了
+  （`qq-agent-1.1.1-2026-10-03-full.zip`），tag 里不必重复。
+- **为什么不手打 tag**：手打必漂移 —— tag 写 `v1.1.0` 而 `package.json` 是 `1.1.1`，
+  用户会拿到"检测到新版本"但下载后版本没变的鬼故事。脚本会强制两者一致。
+
+#### 一次完整发版
+
+```bash
+# 1. 改版本号（只改这一处）
+#    编辑 package.json 的 "version": "1.1.1"
+
+# 2. 提交 + 推送
+git add -A && git commit -m "release: v1.1.1"
+git push origin <你的分支>
+
+# 3. 演练（可选但建议）：只校验不真的发布
+npm run release:dry
+
+# 4. 正式发布
+npm run release -- --notes "这版改了什么：…" --yes
+```
+
+`npm run release` 会依次做完：
+
+1. 校验 `package.json` 版本号是 `x.y.z` 三段
+2. 校验工作区干净（有未提交改动就拒绝 —— tag 应对应一个确定的状态）
+3. 校验 `v1.1.1` 这个 tag 还没被占用
+4. 跑 `pack-release.mjs` 打包（full 版，产物在 `dist/`）
+5. `git tag -a v1.1.1` + `git push origin v1.1.1`
+6. `gh release create v1.1.1 dist/qq-agent-1.1.1-<日期>-full.zip --title "v1.1.1"`
+
+常用参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--dry-run` | 只打印将做什么，不打 tag 不上传 |
+| `--notes "…"` | Release 的更新说明（会显示给用户） |
+| `--yes` | 跳过交互确认（CI 或非交互终端里必须加） |
+| `--skip-pack` | 复用 `dist/` 里已有的包（**会核对版本号**，用旧包的版本发版会被拦） |
+
+#### 发完长什么样
+
+`https://github.com/kiylu/qq-agent-mine/releases/tag/v1.1.1` 页面上会有一个
+`qq-agent-1.1.1-<日期>-full.zip`（约 120 MB）。
+
+程序侧的更新检查会：启动时查一次、之后每小时查一次；发现 `tag_name` 比本地 `package.json`
+新就在「设置 → 桌面端」挂红点并弹浮窗，浮窗里给出下载链接和"解压覆盖"的说明。
+
+#### 只想改代码、暂不发版
+
+正常提 PR 合并即可，不用碰版本号。发版是独立动作。
+
 ### 旧版更新流程（覆盖式升级，数据不丢）
 
 拿到新版本的发布包后，**不需要重新配置，也不需要迁移数据**——直接覆盖代码、保留 `data/` 即可。

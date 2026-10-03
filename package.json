@@ -1,6 +1,6 @@
 {
   "name": "qq-agent",
-  "version": "0.4.0",
+  "version": "1.1.1",
   "private": false,
   "description": "QQ 群 AI 机器人（桌面版）：事件驱动的无状态 Agent，接 OpenAI 兼容 API，带会话式控制台。",
   "type": "module",
@@ -8,7 +8,7 @@
   "build": {
     "appId": "cn.kondius.qq-agent",
     "productName": "QQ Agent",
-    "artifactName": "QQ-Agent-V0.4-Preview-Setup.exe",
+    "artifactName": "QQ-Agent-${version}-Setup.exe",
     "asar": false,
     "files": [
       "**/*",
@@ -52,7 +52,7 @@
     "setup": "node scripts/setup.mjs",
     "setup:check": "node scripts/setup.mjs --check",
     "setup:napcat": "node scripts/setup-napcat.mjs",
-    "test": "node test/selftest.mjs && node test/community-test.mjs && node test/skill-test.mjs && node test/skill-cache-impact-test.mjs && node test/onebot-whitelist-test.mjs && node test/sticker-collect-test.mjs && node test/message-id-test.mjs && node test/sticker-context.mjs && node test/skill-modal-ui.mjs && node test/ext-submenu-ui.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs && node test/usage-daily-test.mjs && node test/session-cost-test.mjs && node test/test-prompt.mjs && node test/prompt-anchor-test.mjs && node test/conversation-buffer-test.mjs && node test/continuation-e2e-test.mjs && node test/self-note-test.mjs && node test/wake-semantics-test.mjs && node test/setup-qq-version.mjs && node test/setup-download.mjs && node test/qq-pack.mjs && node test/qq-process-detect.mjs && node test/sender-file-uri-test.mjs && node test/sender-send-path-test.mjs && node test/vendor-mirror-test.mjs && node test/safe-fetch-file-test.mjs && node test/market-zip-test.mjs && node test/web-search-parse.mjs && node test/pack-release-test.mjs",
+    "test": "node test/selftest.mjs && node test/community-test.mjs && node test/skill-test.mjs && node test/skill-cache-impact-test.mjs && node test/onebot-whitelist-test.mjs && node test/sticker-collect-test.mjs && node test/message-id-test.mjs && node test/sticker-context.mjs && node test/skill-modal-ui.mjs && node test/ext-submenu-ui.mjs && node test/release-parse.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs && node test/usage-daily-test.mjs && node test/session-cost-test.mjs && node test/test-prompt.mjs && node test/prompt-anchor-test.mjs && node test/conversation-buffer-test.mjs && node test/continuation-e2e-test.mjs && node test/self-note-test.mjs && node test/wake-semantics-test.mjs && node test/setup-qq-version.mjs && node test/setup-download.mjs && node test/qq-pack.mjs && node test/qq-process-detect.mjs && node test/sender-file-uri-test.mjs && node test/sender-send-path-test.mjs && node test/vendor-mirror-test.mjs && node test/safe-fetch-file-test.mjs && node test/market-zip-test.mjs && node test/web-search-parse.mjs && node test/pack-release-test.mjs",
     "test:whitelist": "node test/onebot-whitelist-test.mjs",
     "test:sticker": "node test/sticker-collect-test.mjs",
     "test:msgid": "node test/message-id-test.mjs",
@@ -84,10 +84,13 @@
     "check:load": "node scripts/preload-check.mjs",
     "test:wakesem": "node test/wake-semantics-test.mjs",
     "pack:release": "node scripts/pack-release.mjs",
+    "release": "node scripts/release.mjs",
+    "release:dry": "node scripts/release.mjs --dry-run",
     "pack:release:slim": "node scripts/pack-release.mjs --slim",
     "test:pack": "node test/pack-release-test.mjs",
     "test:uninstall:e2e": "node test/skill-uninstall-e2e.mjs",
-    "test:extsub": "node test/ext-submenu-ui.mjs"
+    "test:extsub": "node test/ext-submenu-ui.mjs",
+    "test:release": "node test/release-parse.mjs"
   },
   "dependencies": {
     "js-yaml": "^5.4.1",
@@ -113,10 +116,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Kondius/qq-agent.git"
+    "url": "https://github.com/kiylu/qq-agent-mine.git"
   },
   "bugs": {
-    "url": "https://github.com/Kondius/qq-agent/issues"
+    "url": "https://github.com/kiylu/qq-agent-mine/issues"
   },
-  "homepage": "https://github.com/Kondius/qq-agent#readme"
+  "homepage": "https://github.com/kiylu/qq-agent-mine#readme"
 }

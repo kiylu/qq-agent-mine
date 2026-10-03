@@ -122,6 +122,13 @@ c.section('1. 状态 / 用量 / 价格');
     assert.ok('ok' in r.data, '应返回 ok 字段');
     assert.ok('current' in r.data, '应返回当前版本');
     assert.ok(r.data.ok === true ? typeof r.data.hasUpdate === 'boolean' : true, '成功时应给出 hasUpdate');
+    // 版本源已从前作者的 version.json 换成 GitHub Releases（2026-10-03）。
+    // 仓库还没发过第一个 Release 时 GitHub 返回 404 —— 那是**正常状态**，
+    // 必须降级成"无更新"，不能报错（新装用户否则永远看到"检查更新失败"）。
+    if (r.data.ok) {
+      assert.match(String(r.data.url || ''), /^https?:\/\//, 'url 应是可直接打开的 http(s) 链接');
+      assert.equal(typeof r.data.hasUpdate, 'boolean');
+    }
   });
 }
 

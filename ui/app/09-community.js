@@ -22,9 +22,10 @@ function showNoticeModal(title, text) {
 
 /**
  * 上传成功浮框（右上角）：不自动消失，只能手动关闭，带目标网址。
- * 意见收集 / 金句上传成功后调用。
+ * 金句上传成功后调用；发现新版本时也复用（副标题写清"怎么更新"）。
+ * subtitle：可选的补充说明（纯文本，自动转义），放在链接上方。
  */
-function showUploadToast(title, url, { onClose } = {}) {
+function showUploadToast(title, url, { onClose, subtitle } = {}) {
   // 同类型只留一个（连着传两次不堆叠）
   document.querySelectorAll('.upload-toast').forEach((el) => {
     el.classList.add('closing');
@@ -37,6 +38,7 @@ function showUploadToast(title, url, { onClose } = {}) {
       <span class="ut-title">${esc(title)}</span>
       <button class="ut-close" type="button" aria-label="关闭" title="关闭">×</button>
     </div>
+    ${subtitle ? `<div class="ut-sub">${esc(subtitle)}</div>` : ''}
     <a class="ut-link" href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a>`;
   document.body.appendChild(el);
   el.querySelector('.ut-close').addEventListener('click', () => {

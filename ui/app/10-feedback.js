@@ -482,10 +482,17 @@ async function runUpdateCheck({ manual = false } = {}) {
     renderUpdateDot();
     // 自动检查弹浮窗；本次启动内被用户关过就不再弹（手动点「检查更新」除外）
     if (updateAvailable && (!updateToastDismissed || manual)) {
+      // 对外分发的是 zip（解压覆盖式），不是安装包 —— 文案要说清怎么更新，
+      // 否则用户会去找那个不存在的"安装程序"。
       showUploadToast(
         `发现新版本 v${data.latest}（当前 v${data.current}）`,
         data.url,
-        { onClose: () => { updateToastDismissed = true; } }
+        {
+          subtitle: data.assetMissing
+            ? '该版本暂未上传产物，请到发布页手动下载。'
+            : '下载 zip 后解压覆盖安装目录即可（会保留你的 config.json 与聊天记录），覆盖后重启生效。',
+          onClose: () => { updateToastDismissed = true; }
+        }
       );
     }
     return data;

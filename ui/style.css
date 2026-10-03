@@ -1610,6 +1610,12 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 .upload-toast .ut-title { font-weight: 650; font-size: 13.5px; }
 .upload-toast .ut-close { color: var(--tx3); }
 .upload-toast .ut-link { color: var(--ac); font-size: 12px; }
+/* 更新浮窗的"怎么更新"说明（2026-10-03）：zip 覆盖式更新需要讲清步骤，
+   否则用户会去找不存在的安装程序。 */
+.upload-toast .ut-sub {
+  font-size: 11.5px; color: var(--tx3); line-height: 1.55; margin-top: 4px;
+  word-break: break-word;
+}
 /* 原 .fb-imgs / .fb-img（意见收集的附图九宫格）随该功能一起移除 —— 2026-10-03 */
 
 /* dirty 变动反馈 */

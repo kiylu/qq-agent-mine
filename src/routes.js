@@ -46,7 +46,8 @@ export function createRoutes(deps) {
     store, memory, sessions, onebot, orchestrator,
     emit, log,
     // app.js 内部的过程/状态
-    localVersion, compareSemver, UPDATE_INFO_URL,
+    localVersion, compareSemver, normalizeVersion,
+    UPDATE_RELEASE_API, UPDATE_RELEASE_PAGE, UPDATE_ASSET_VERSION_RE,
     sanitizeConfig, keyEndpointAllowed, sanitizeProvider,
     readBody, authorize,
     snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaStatus, snowlumaLogs,
@@ -1188,16 +1189,47 @@ export function createRoutes(deps) {
       handler: async ({ res, json }) => {
         const current = localVersion();
         try {
-          const r = await fetch(UPDATE_INFO_URL, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
+          const r = await fetch(UPDATE_RELEASE_API, {
+            signal: AbortSignal.timeout(8000),
+            cache: 'no-store',
+            headers: {
+              // GitHub API 强制要求 User-Agent，缺了直接 403。
+              'accept': 'application/vnd.github+json',
+              'x-github-api-version': '2022-11-28',
+              'user-agent': 'qq-agent-updater'
+            }
+          });
+          // 一个 Release 都没有时 GitHub 返回 404 —— 这是**正常状态**（首次发版前），
+          // 不能当成错误往 UI 弹，否则新装的用户永远看到"检查更新失败"。
+          if (r.status === 404) {
+            return json(res, 200, { ok: true, current, latest: current, hasUpdate: false, url: UPDATE_RELEASE_PAGE, notes: '' });
+          }
+          if (r.status === 403 || r.status === 429) {
+            throw new Error(`GitHub API 限流（HTTP ${r.status}），请稍后再试`);
+          }
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          const info = await r.json();
-          const latest = String(info.version || '');
-          if (!latest) throw new Error('version.json 缺少 version 字段');
+          const rel = await r.json();
+
+          // tag_name 形如 v1.1.1；GitHub 的 latest 天然排除 draft 与 prerelease。
+          const latest = normalizeVersion(rel?.tag_name);
+          if (!latest) throw new Error('Release 缺少 tag_name');
+
+          // 产物名带日期后缀（qq-agent-1.1.1-2026-10-03-full.zip），
+          // 所以靠正则抓版本段来挑，**不能**用 startsWith 精确匹配文件名。
+          const assets = Array.isArray(rel?.assets) ? rel.assets : [];
+          const matched = assets.find((a) => UPDATE_ASSET_VERSION_RE.exec(a?.name || '')?.[1] === latest);
+          const zip = matched
+            || assets.find((a) => /\.zip$/i.test(a?.name || ''))   // 兜底：取第一个 zip
+            || null;
+
           return json(res, 200, {
             ok: true, current, latest,
             hasUpdate: compareSemver(latest, current) > 0,
-            url: String(info.url || 'https://kondius.cn/qq-agent'),
-            notes: String(info.notes || '')
+            url: zip?.browser_download_url || UPDATE_RELEASE_PAGE,
+            notes: String(rel?.body || ''),
+            // 没传上产物时让 UI 能提示"去 Release 页手动下载"，而不是给一个 404 链接。
+            assetMissing: !zip,
+            releasePage: String(rel?.html_url || UPDATE_RELEASE_PAGE)
           });
         } catch (error) {
           return json(res, 200, { ok: false, current, error: String(error?.message ?? error) });
