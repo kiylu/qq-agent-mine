@@ -354,4 +354,24 @@ await c.check('空会话不显示命中率（避免误导性的 0%）', () => {
     '命中率应仅在 promptTokens > 0 时展示');
 });
 
+// ── 8. 记忆页「查看思维链」模块 ───────────────────────────────────────────
+// 思维链 = 活跃缓冲里的 messages（跨轮保留的"自己想过什么"）。UI 必须：
+//   ① 有入口（折叠块 + 惰性加载，不在打开记忆页时就拉大 JSON）
+//   ② 打到 /thoughts 接口
+//   ③ 渲染函数把三类消息（user/assistant/tool）都覆盖
+c.section('8. 记忆页查看思维链模块');
+await c.check('记忆页有「查看思维链」入口，且惰性加载', () => {
+  assert.ok(appJs.includes('mem-thoughts-fold'), '缺少思维链折叠块入口');
+  assert.ok(appJs.includes("'toggle'"), '思维链模块应惰性加载（toggle 时才请求）');
+  assert.ok(appJs.includes('/thoughts'), '思维链模块应请求 /thoughts 接口');
+});
+await c.check('思维链渲染函数覆盖三类消息', () => {
+  assert.ok(appJs.includes('function renderThoughts'), '缺少 renderThoughts 渲染函数');
+  // 三类角色标签靠动态类名 mem-thought-${kind} 区分（user / assistant / tool）
+  assert.ok(/mem-thought-\$\{kind\}/.test(appJs), '思维链卡片应带动态类型类名 mem-thought-${kind}');
+  assert.ok(appJs.includes('think-call'), '应渲染工具调用卡片（think-call）');
+  assert.ok(appJs.includes('tool_calls'), '应处理 assistant 的 tool_calls');
+  assert.ok(css.includes('.mem-thought'), 'CSS 缺少 .mem-thought 样式');
+});
+
 c.finish();

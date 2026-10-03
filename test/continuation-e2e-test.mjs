@@ -185,6 +185,27 @@ await check('手动重开会话也会归档当前缓冲', async () => {
   assert.equal(after, before + 1, '重开会话应新增一份归档');
 });
 
+// ═══ 场景 8：思维链接口（记忆页「🧠 查看思维链」的数据源）═══
+await check('思维链接口返回活跃缓冲的 messages（含 assistant/tool 往返）', async () => {
+  await fire('@覆盖Bot 建立思维链', 70030);
+  const r = await request('GET', '/api/chats/group_456/thoughts');
+  assert.equal(r.status, 200);
+  const msgs = r.data.messages || [];
+  assert.ok(msgs.length >= 2, `应至少含 user + assistant：${msgs.length}`);
+  assert.equal(msgs[0].role, 'user', '首条应是 user（本轮输入）');
+  assert.ok(msgs.some((m) => m.role === 'assistant'), '应含 assistant 思考条目');
+  assert.ok((r.data.turns || 0) >= 1, '应带 turns');
+});
+
+await check('思维链接口在没有缓冲时返回空数组（不报错）', async () => {
+  // 先清掉缓冲，模拟"会话已关闭"
+  await request('POST', '/api/chats/group_456/new-conversation', { body: {} });
+  const r = await request('GET', '/api/chats/group_456/thoughts');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.messages, [], '无缓冲时应返回空 messages');
+  assert.equal(r.data.turns, 0);
+});
+
 await teardown();
 
 console.log(`\n会话延续端到端：通过 ${pass.length}，失败 ${fail.length}`);

@@ -538,6 +538,13 @@ c.section('7. 会话 / 存档 / 记忆');
     assert.ok(r.data.messages.some((m) => m.text === '覆盖测试消息一'), '应包含写入的消息');
   });
 
+  await c.check('GET /api/chats/:key/thoughts：返回思维链（无缓冲时为空数组）', async () => {
+    const r = await hit('GET', '/api/chats/group_456/thoughts');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.chatKey, 'group:456');
+    assert.ok(Array.isArray(r.data.messages), 'messages 应是数组（无缓冲时为空）');
+  });
+
   await c.check('GET /api/groups/:id/members：拉群成员列表', async () => {
     const r = await hit('GET', '/api/groups/456/members');
     assert.equal(r.status, 200);

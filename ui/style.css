@@ -629,6 +629,21 @@ span.unread {
   flex: 0 0 auto; margin-left: auto;
 }
 .mem-fold > summary .mem-actions .btn { flex: 0 0 auto; }
+
+/* 记忆页「🧠 查看思维链」：跨轮保留的思考链（user / 思考 / 工具结果 三类卡片） */
+.think-meta { font-size: 11.5px; margin-bottom: 8px; }
+.think-flow-list { display: flex; flex-direction: column; gap: 8px; }
+.mem-thought > summary { display: flex; align-items: center; gap: 9px; }
+.mem-thought .tool-name-flow { font-size: 12px; font-weight: 600; }
+.mem-thought-user { border-left: 3px solid var(--ac-line); }
+.mem-thought-think { border-left: 3px solid var(--ac); background: var(--ac-soft); }
+.mem-thought-tool-result { border-left: 3px solid var(--bd2); }
+.mem-thought .think-call {
+  margin-top: 8px; padding: 8px 10px; border: 1px solid var(--bd);
+  border-radius: var(--r-xs); background: var(--bg0);
+}
+.mem-thought .think-call-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.mem-thought .think-call .tool-args { margin-top: 4px; }
 .tool-ico {
   width: 22px; height: 22px; border-radius: var(--r-xs); display: grid; place-items: center;
   border: 1px solid var(--ac-line); color: var(--ac); font-size: 11px;

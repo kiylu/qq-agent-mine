@@ -174,6 +174,19 @@ async function loadMemoryDetail(chatKey) {
     const selfHtml = selfNotes.length
       ? `<details class="collapsible mem-fold"><summary><span class="mem-who">🪞 自身状态（${selfNotes.length} 条）</span></summary><div class="coll-body">${esc(selfNotes.map((e) => `- ${e.content}`).join('\n'))}</div></details>`
       : '';
+    // 查看思维链（本次新增）：展示机器人"自己想过什么"的完整 messages。
+    // 注意这是**活跃缓冲**里的内容（跨轮保留的思考链），不是单条会话记录 ——
+    // 关掉会话后缓冲清空，这里就空了（历史可去会话页看单条记录）。
+    const thoughtsHtml = `
+      <details class="collapsible mem-fold" id="mem-thoughts-fold">
+        <summary>
+          <span class="mem-who">🧠 查看思维链</span>
+          <span class="muted" id="mem-thoughts-hint">机器人这段对话里「自己想过什么」（含工具调用与结果）</span>
+        </summary>
+        <div class="coll-body" id="mem-thoughts-body">
+          <div class="muted">展开后加载…</div>
+        </div>
+      </details>`;
     detail.innerHTML = `
       <div class="detail-header">
         <h2>${esc(formatChatTitle(chatKey, chatNameOf(chatKey)))} 的记忆</h2>
@@ -185,9 +198,29 @@ async function loadMemoryDetail(chatKey) {
         </div>
       </div>
       ${membersHtml}
+      ${thoughtsHtml}
       ${selfHtml}
       ${rows || '<div class="muted" style="padding:10px">还没有任何群友印象（可点右上角「＋ 添加印象」手动记，或点「整理本群记忆」让模型从聊天记录里提炼）。</div>'}
     `;
+    // 思维链惰性加载：展开时才请求（缓冲可能很大，不该在打开记忆页时就拉）。
+    const thoughtsFold = detail.querySelector('#mem-thoughts-fold');
+    if (thoughtsFold) {
+      let loaded = false;
+      thoughtsFold.addEventListener('toggle', async () => {
+        if (!thoughtsFold.open || loaded) return;
+        loaded = true;
+        const bodyEl = detail.querySelector('#mem-thoughts-body');
+        const hintEl = detail.querySelector('#mem-thoughts-hint');
+        if (!bodyEl) return;
+        bodyEl.innerHTML = '<div class="muted">加载中…</div>';
+        try {
+          const r = await api(`/api/chats/${chatKey.replace(':', '_')}/thoughts`);
+          renderThoughts(bodyEl, hintEl, r);
+        } catch (e) {
+          bodyEl.innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+        }
+      });
+    }
     const loadMembersBtn = $('#mem-load-members-btn');
     if (loadMembersBtn) loadMembersBtn.addEventListener('click', () => loadGroupMembers(chatId, chatKey));
     $$('.mem-edit-imp', detail).forEach((el) => {
@@ -282,6 +315,77 @@ async function loadMemoryDetail(chatKey) {
   } catch (e) {
     detail.innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
   }
+}
+
+/**
+ * 渲染思维链（记忆页「🧠 查看思维链」展开时调用）。
+ * 数据源 = 活跃缓冲的 messages（机器人跨轮保留的"自己想过什么"）。
+ * 与「会话详情」的区别：会话详情是**单次触发**的记录，这里是**跨轮连续**的思考链。
+ *
+ * 消息形态（与 LLM 请求一致）：
+ *   - user      → 本轮输入（提示词，通常是【角色设定】【已读信息】等长文本）
+ *   - assistant → 机器人的思考文本 + 可能的 tool_calls（纯工具调用时 content 为空）
+ *   - tool      → 工具返回结果（JSON 文本）
+ */
+function renderThoughts(bodyEl, hintEl, data) {
+  const msgs = Array.isArray(data.messages) ? data.messages : [];
+  if (!msgs.length) {
+    bodyEl.innerHTML = '<div class="muted" style="padding:8px">当前没有活跃的思维链（会话已关闭/从未开始，或刚被重开）。历史思考可在「会话」页看单条会话记录。</div>';
+    if (hintEl) hintEl.textContent = '暂无';
+    return;
+  }
+  if (hintEl) hintEl.textContent = `延续 ${data.turns || 0} 轮 · ${msgs.length} 条消息 · ${fmtChars(data.chars)}`;
+
+  const kindOf = (m) => {
+    if (m.role === 'assistant') return 'think';
+    if (m.role === 'tool' || m.tool_call_id) return 'tool-result';
+    return 'user';
+  };
+  const roleLabel = { user: '输入', assistant: '思考', tool: '工具结果' };
+  const roleIcon = { user: '📥', assistant: '💭', tool: '⚒' };
+
+  const blocks = msgs.map((m, i) => {
+    const kind = kindOf(m);
+    const text = typeof m.content === 'string' ? m.content : (m.content == null ? '' : JSON.stringify(m.content, null, 1));
+    const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+    // 工具调用卡片（assistant 里的 tool_calls，逐个渲染参数）
+    const callsHtml = calls.map((c) => {
+      const meta = (typeof TOOL_META === 'object' && TOOL_META) ? TOOL_META[c.function?.name || c.name] : null;
+      const name = c.function?.name || c.name || 'tool';
+      const ico = meta?.icon || '⚒';
+      const label = meta?.name || name;
+      let args = c.function?.arguments ?? c.arguments ?? '';
+      try { args = JSON.stringify(JSON.parse(args), null, 1); } catch { /* 非 JSON 原样 */ }
+      return `
+        <div class="think-call">
+          <div class="think-call-head"><span class="tool-ico">${ico}</span><span class="tool-name-flow">${esc(name)}</span><span class="tool-label">${esc(label)}</span></div>
+          <div class="tool-args">${esc(String(args))}</div>
+        </div>`;
+    }).join('');
+    // 纯工具调用轮（content 空）：只显示调用卡片，不显示空的"思考"
+    const showText = text.trim() || !calls.length;
+    return `
+      <details class="collapsible mem-thought mem-thought-${kind}">
+        <summary>
+          <span class="tool-ico">${roleIcon[kind]}</span>
+          <span class="tool-name-flow">${roleLabel[kind]}</span>
+          <span class="tool-label">#${i + 1}</span>
+          ${kind === 'user' ? `<span class="tool-label">${fmtChars(text.length)}</span>` : ''}
+          ${calls.length ? `<span class="badge ok">${calls.length} 次工具调用</span>` : ''}
+        </summary>
+        <div class="coll-body think-body">${showText ? esc(text || '（空）') : ''}${callsHtml}</div>
+      </details>`;
+  }).join('');
+
+  bodyEl.innerHTML = `
+    <div class="think-meta muted">起始 ${fmtClock(data.startedAt)} · 最近 ${fmtClock(data.lastTurnAt)}</div>
+    <div class="msg-flow think-flow-list">${blocks}</div>`;
+}
+
+/** 字符数简写（思维链显示用）。 */
+function fmtChars(n) {
+  n = Number(n) || 0;
+  return n >= 10000 ? `${(n / 1000).toFixed(1)}k 字符` : `${n} 字符`;
 }
 
 /** 编辑/添加某个群友的印象（一行一条，保存后整体替换）。 */
