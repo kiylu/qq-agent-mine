@@ -1610,9 +1610,7 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
 .upload-toast .ut-title { font-weight: 650; font-size: 13.5px; }
 .upload-toast .ut-close { color: var(--tx3); }
 .upload-toast .ut-link { color: var(--ac); font-size: 12px; }
-.fb-imgs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
-.fb-img { position: relative; border: 1px solid var(--bd); border-radius: var(--r-sm); overflow: hidden; aspect-ratio: 1; }
-.fb-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 原 .fb-imgs / .fb-img（意见收集的附图九宫格）随该功能一起移除 —— 2026-10-03 */
 
 /* dirty 变动反馈 */
 .dirty-glow {
@@ -1727,6 +1725,15 @@ td b, .tbl td b { color: var(--tx); font-weight: 600; }
    d2/d3/d4，档位反馈由拇指位 + 大号读数 + 预设高亮承担）。
    这里只补：行容器、双珠形态的第二颗拇指、以及减少动态偏好兜底。 */
 .ac-tier-wrap { display: flex; flex-direction: column; gap: 4px; }
+/* 触发概率手动输入（与档位滑条双向同步，2026-10-03）。
+   滑条只能拖，填不了精确值 —— 加一个可输入的口子：填百分比自动跳到 3 档对应位置。
+   非 3 档时 disabled（概率恒为 0 或 100，编辑无意义），hint 说明原因。 */
+.ac-prob-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ac-prob-label { font-size: 12.5px; color: var(--tx2); }
+.ac-prob-row .inp-wrap { width: 92px; }
+.ac-prob-row .inp { width: 100%; }
+.ac-prob-hint { flex: 1 1 200px; min-width: 0; margin: 0; }
+.ac-prob-row .inp:disabled { opacity: .5; cursor: not-allowed; }
 /* 分群按钮区（活跃设置 → 选择要单独设置的群聊）——
    2026-09-25 补齐：这组类（ac-group-*）从模态框时代起就没写过样式，
    按钮一直是裸按钮（无边框无底色），看起来像"没有样式"。 */

@@ -288,6 +288,15 @@ function mountActiveConfigEditor(root) {
           <span class="tr-big" id="ac-tier-num">${peakOn0 && peakTier0 >= 1 && peakTier0 !== tier0 ? `峰 ${peakTier0} 档 · 谷 ${tier0} 档` : `${tier0} 档`}</span>
           <span class="tr-txt" id="ac-tier-note">${peakOn0 ? `高峰：${descOf(dPeak.peakPos)}<br>低谷：${descOf(dPeak.valleyPos)}` : descOf(peakOn0 ? dPeak.valleyPos : globalPos)}</span>
         </div>
+        <div class="ac-prob-row">
+          <label class="ac-prob-label" for="ac-prob-input">手动输入触发概率</label>
+          <span class="inp-wrap">
+            <input class="inp mono" type="number" id="ac-prob-input" min="0" max="100" step="1"
+              aria-label="触发概率（百分比）" />
+            <span class="inp-suffix">%</span>
+          </span>
+          <span class="hint ac-prob-hint" id="ac-prob-hint"></span>
+        </div>
         <div class="hint ac-target" id="ac-target"></div>
       </div>
       <div class="ac-right">
@@ -319,6 +328,55 @@ function mountActiveConfigEditor(root) {
   const peakOnNow = () => (chkPeak ? chkPeak.checked === true : (state.config?.store?.peakSchedule?.enabled === true));
   const noteEl = overlay.querySelector('#ac-tier-note');
   const targetEl = overlay.querySelector('#ac-target');
+  const probInput = overlay.querySelector('#ac-prob-input');
+  const probHint = overlay.querySelector('#ac-prob-hint');
+
+  // ── 概率输入框 ⇄ 滑条 双向同步 ──
+  // 为什么只对"低谷/单珠"生效：峰谷开启时轨道上有两颗珠（高峰档 + 低谷档），
+  // 一个输入框对应两个值会歧义 —— 那时它改为只读展示低谷值，并提示去拖滑条。
+  //
+  // 概率 → 位置**不能**用 tierToSlider(3, pct)：那个函数是给"档位+概率 → 位置"用的，
+  // 端点会取整到档位中心（0% → 20、100% → 90），而 sliderToTier 判 3 档用的是
+  // `p > tier2End && p <= tier3End`（左开右闭）—— 20 判成 2 档、90 判成 4 档，
+  // 语义整个错位（"0% 概率"会变成"只命中关键词才响应"）。
+  // 这里按 3 档的正向公式自己反解，再把端点夹进开区间，各收 0.01。
+  const probToPos = (pct) => {
+    const p = Math.min(100, Math.max(0, Number(pct) || 0));
+    const B2 = TIER_SLIDER_BANDS;
+    const raw = B2.tier2End + (p / 100) * (B2.tier3End - B2.tier2End);
+    return Math.min(B2.tier3End - 0.01, Math.max(B2.tier2End + 0.01, raw));
+  };
+
+  const syncProbBox = () => {
+    if (!probInput) return;
+    const peakOn = peakOnNow();
+    const v = vsl?.values || { low: 0, high: 0 };
+    const { tier, randomPercent } = sliderToTierUI(v.low);   // 统一展示低谷（活跃）那一档
+    // 输入框只在 3 档（概率线性段）可写：1/2 档概率恒 0、4 档恒 100，
+    // 让用户"编辑"它们没有意义（会立刻被吸附回档位中心）。
+    const editable = !peakOn && tier === 3;
+    probInput.value = String(randomPercent);
+    probInput.disabled = !editable;
+    if (probHint) {
+      probHint.textContent = peakOn
+        ? '峰谷模式下有两颗珠（高峰/低谷各一个概率），此处只展示低谷值 —— 请拖滑条分别设定'
+        : (tier === 3 ? '与滑条联动：填 0~100 会自动跳到 3 档对应位置'
+          : `当前 ${tier} 档概率固定为 ${randomPercent}%（${tier <= 2 ? '必响应才触发' : '全部触发'}），要自定义概率请先把滑条拖到 3 档`);
+    }
+  };
+  // 输入 → 滑条：把百分比换算成 3 档内的位置，写进草稿并让滑条跳过去
+  probInput?.addEventListener('change', () => {
+    if (probInput.disabled) return;
+    const raw = Number(probInput.value);
+    if (!Number.isFinite(raw)) { syncProbBox(); return; }
+    const pos = probToPos(raw);
+    const unified = unifiedNow();
+    if (unified) dContextPos = pos;
+    else if (activeGid) dGroupPos[activeGid] = pos;
+    else { syncProbBox(); return; }   // 分群但没选群：无处可写，原样退回
+    vsl?.setValues(pos, pos);
+    refreshAfterValueChange(false);
+  });
 
   // ── 横向分段档位滑条（指针/键盘驱动，单/双珠同轨道）──
   // 值的真正持有者是下面的草稿变量（dContextPos / dPeak / dGroup*），
@@ -338,6 +396,7 @@ function mountActiveConfigEditor(root) {
         syncScale(sliderToTierUI(low).tier, -1);
         setNote(descOf(low));
       }
+      syncProbBox();   // 滑条动了 → 概率框跟着走
     },
     onChange: ({ low, high }) => {
       const unified = unifiedNow();
@@ -453,6 +512,7 @@ function mountActiveConfigEditor(root) {
       syncScale(sliderToTierUI(t.single).tier, -1);
       setNote(descOf(t.single));
     }
+    syncProbBox();   // 换象限 / 换群 → 概率框跟着换成对应档位的值
   }
 
   /** 值变化后的联动刷新（滑条已是新值，只刷刻度/说明/群按钮小圆点）。 */
@@ -466,6 +526,7 @@ function mountActiveConfigEditor(root) {
       setNote(descOf(v.low));
     }
     renderGroupButtons();   // "有单独设置"的小圆点可能变了
+    syncProbBox();
   }
 
   /** 开关切换：只切显隐 + 重载滑条值，不重建弹窗。animate=false 用于初始装填（不播动画）。 */

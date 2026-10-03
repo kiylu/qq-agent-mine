@@ -105,8 +105,15 @@ const sandbox = {
   // vm 的 window 是本 sandbox 自己（无 DOM），补一个空实现让模块加载不崩。
   addEventListener() {}, removeEventListener() {},
   Event: class { constructor(type, opts = {}) { this.type = type; this.bubbles = !!opts.bubbles; } },
-  // switchTab 末尾派发 qqagent:tabswitched（供「扩展」二级菜单收起自己）
-  CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
+  // switchTab 末尾派发 qqagent:tabswitched（供二级菜单收起自己）
+  CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
+  // 活跃设置编辑器用 MutationObserver 观察弹窗从 DOM 摘除以解绑滑条指针监听。
+  // 沙箱无 DOM，补一个永不触发的空实现 —— 少了它 mountActiveConfigEditor 会抛错，
+  // 表现为设置页渲染出「设置页渲染失败」占位（测试仍绿，但日志有噪声、真实原因被淹没）。
+  MutationObserver: class {
+    constructor(cb) { this.cb = cb; }
+    observe() {} disconnect() {} takeRecords() { return []; }
+  }
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;

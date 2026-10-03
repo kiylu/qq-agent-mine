@@ -71,32 +71,45 @@
 
   <nav id="tabs">
     <button class="tab active" data-tab="sessions">会话</button>
-    <button class="tab" data-tab="chats">存档</button>
-    <button class="tab" data-tab="memory">记忆</button>
+    <button class="tab has-sub" data-tab="chats" id="archive-tab" aria-haspopup="true" aria-expanded="false" title="消息存档与记忆">记录<span class="tab-caret" aria-hidden="true"></span></button>
     <button class="tab" data-tab="usage">用量</button>
     <button class="tab has-sub" data-tab="skills" id="ext-tab" aria-haspopup="true" aria-expanded="false" title="技能与插件">扩展<span class="tab-caret" aria-hidden="true"></span></button>
     <button class="tab" data-tab="snowluma">SnowLuma</button>
     <button class="tab" data-tab="settings">设置</button>
-    <!-- 社区功能（右侧）：金句上传 / 意见收集。金句勾选模式下「确认金句」出现在最左 -->
+    <!-- 社区功能（右侧）：金句上传。金句勾选模式下「确认金句」出现在最左 -->
     <span class="nav-spacer"></span>
     <button class="nav-btn hidden" id="quote-confirm-btn">确认金句</button>
     <button class="nav-btn" id="quote-btn" title="把机器人的精彩发言收录到金句墙">金句上传</button>
-    <button class="nav-btn" id="feedback-btn" title="向作者反馈意见和建议">意见收集</button>
     <button class="nav-btn nav-btn-market" id="skill-market-btn" title="打开 Skill 市场">Skill 市场</button>
     <button class="nav-btn nav-btn-market" id="plugin-market-btn" title="打开插件市场">插件市场</button>
     <button class="nav-btn nav-btn-persona" id="persona-plaza-btn" title="打开人设广场">人设广场</button>
   </nav>
+
+  <!-- 「记录」二级选择：存档 / 记忆。
+       2026-10-03：原先「存档」「记忆」是两个平级一级页签，顶栏被挤到 8 项。
+       两者的**内容**仍各占一页（一个是消息流水，一个是长期印象），
+       这里只是在它们之上加一层薄薄的二级选择器 —— 与「扩展」同一套机制。 -->
+  <div class="ext-submenu" id="archive-submenu" hidden>
+    <button class="ext-subitem" data-sub-tab="chats">
+      <span class="ext-subitem-title">存档</span>
+      <span class="ext-subitem-desc">历次聊天的消息流水</span>
+    </button>
+    <button class="ext-subitem" data-sub-tab="memory">
+      <span class="ext-subitem-title">记忆</span>
+      <span class="ext-subitem-desc">对每个人的长期印象</span>
+    </button>
+  </div>
 
   <!-- 「扩展」二级选择：技能 / 插件。
        2026-10-03：原先是两个平级一级页签（技能、插件），把一级导航挤到 8 项。
        两型扩展的**内容**仍各占一页（判定方式不同，混一起看不出类型），
        这里只是在它们之上加一层薄薄的二级选择器。 -->
   <div class="ext-submenu" id="ext-submenu" hidden>
-    <button class="ext-subitem" data-ext-tab="skills">
+    <button class="ext-subitem" data-sub-tab="skills">
       <span class="ext-subitem-title">技能</span>
       <span class="ext-subitem-desc">LLM 型 · 模型自己决定用不用</span>
     </button>
-    <button class="ext-subitem" data-ext-tab="plugins">
+    <button class="ext-subitem" data-sub-tab="plugins">
       <span class="ext-subitem-title">插件</span>
       <span class="ext-subitem-desc">确定性型 · 条件满足必执行</span>
     </button>

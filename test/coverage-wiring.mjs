@@ -157,10 +157,29 @@ cov['首屏'] = scan('首屏');
 //（它们在首屏那轮就已全部扫到）。所以这里统计"访问过的页签数"，而不是新增元素数。
 // ⚠️ 这份列表必须与 index.html 里的 .tab 保持一致 —— 漏掉一个页签，
 // 那一页的按钮就永远不会被接线检查覆盖（skills/plugins 曾经就是这样被漏掉的）。
+// 遍历的是**全部 8 个视图**，不是 6 个一级页签 —— 「记忆」「插件」已降为
+// 「记录」「扩展」下的二级项（2026-10-03），但它们的视图元素照样需要接线扫描，
+// 漏掉的话这两页"看得见但点了没反应"的控件会长期潜伏。
+// 进入方式也按真实用户路径走：一级页签直接点；二级项先点父级展开菜单再点子项。
+const PRIMARY_TABS = ['sessions', 'chats', 'usage', 'skills', 'snowluma', 'settings'];
+const SUB_TAB_ROUTE = {
+  memory: ['archive-tab', 'archive-submenu'],
+  plugins: ['ext-tab', 'ext-submenu']
+};
+const ALL_VIEWS = [...PRIMARY_TABS, 'memory', 'plugins'];
 const visitedTabs = [];
-for (const t of ['sessions', 'chats', 'memory', 'usage', 'skills', 'plugins', 'snowluma', 'settings']) {
-  const tabBtn = window.document.querySelector(`.tab[data-tab="${t}"]`);
-  if (tabBtn) tabBtn.click(); else { try { window.switchTab(t); } catch { /* ignore */ } }
+for (const t of ALL_VIEWS) {
+  const route = SUB_TAB_ROUTE[t];
+  if (route) {
+    const [parentId, menuId] = route;
+    window.document.getElementById(parentId)?.click();
+    await sleep(200);
+    const item = window.document.querySelector(`#${menuId} [data-sub-tab="${t}"]`);
+    if (item) item.click(); else { try { window.switchTab(t); } catch { /* ignore */ } }
+  } else {
+    const tabBtn = window.document.querySelector(`.tab[data-tab="${t}"]`);
+    if (tabBtn) tabBtn.click(); else { try { window.switchTab(t); } catch { /* ignore */ } }
+  }
   await sleep(800);
   visitedTabs.push(t);
   cov[`页签/${t}`] = scan(`页签/${t}`);
@@ -169,17 +188,22 @@ for (const t of ['sessions', 'chats', 'memory', 'usage', 'skills', 'plugins', 's
 // 上面那份清单必须覆盖 index.html 声明的**全部**页签。
 // 漏一个的后果很隐蔽：那一页永远不会被接线检查扫到 —— 页面上"看得见但点了没反应"
 // 的控件就此长期潜伏（skills 页此前就是这样被漏掉的）。
-await c.check('页签遍历覆盖了 index.html 声明的全部页签', () => {
+await c.check('页签遍历覆盖了 index.html 声明的全部页签（含二级项所辖的视图）', () => {
   const declared = [...html.matchAll(/data-tab="([\w-]+)"/g)].map((m) => m[1]);
   const missed = declared.filter((t) => !visitedTabs.includes(t));
   if (missed.length) {
     throw new Error(`这些页签没被遍历到（请同步本文件的页签清单）：${missed.join(', ')}`);
   }
-  const extra = visitedTabs.filter((t) => !declared.includes(t));
-  if (extra.length) {
-    throw new Error(`遍历清单里有 index.html 未声明的页签：${extra.join(', ')}`);
+  // 一级页签清单也必须与 index.html 严格一致（多一个少一个都要暴露出来）。
+  const extraPrimary = PRIMARY_TABS.filter((t) => !declared.includes(t));
+  if (extraPrimary.length) {
+    throw new Error(`一级页签清单里有 index.html 未声明的页签：${extraPrimary.join(', ')}`);
   }
-  return `${declared.length} 个页签全部覆盖`;
+  const missedPrimary = declared.filter((t) => !PRIMARY_TABS.includes(t));
+  if (missedPrimary.length) {
+    throw new Error(`index.html 声明的一级页签没被遍历到：${missedPrimary.join(', ')}`);
+  }
+  return `${declared.length} 个一级页签 + ${ALL_VIEWS.length - declared.length} 个二级视图全部覆盖`;
 });
 
 // ── 2) 设置页各分区（点侧栏菜单项）────────────────────────────────────────
@@ -208,7 +232,8 @@ const MODALS = [
   ['模型管理', 'openModelManageModal', [], 'api'],
   ['批量价格编辑', 'openBatchPriceModal', [], 'api'],
   ['屏蔽名单', 'openBlocklistModal', [], 'chat'],
-  ['意见反馈', 'openFeedbackModal', [], null],
+  // 2026-10-03：「意见反馈」弹窗（openFeedbackModal）随「意见收集」入口一起移除，
+  // 这里同步删掉用例 —— 否则本文件会因「函数不存在」把 test:coverage 判红。
   ['群白名单选择', 'openWhitelistPicker', ['groups'], 'allow'],
   ['好友白名单选择', 'openWhitelistPicker', ['friends'], 'allow']
 ];

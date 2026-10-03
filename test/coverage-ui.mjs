@@ -201,27 +201,78 @@ await c.check('「扩展」是技能/插件的共同父级页签（二级选择�
   // 「插件」不再是一级页签（否则又变回两个平级页签，合并就白做了）
   assert.ok(!tabs.includes('plugins'),
     `「插件」不应再是一级页签，实际一级页签：${tabs.join(' → ')}`);
-  // 二级选择器与两个选项
+  // 二级选择器与两个选项（属性名是 data-sub-tab，两组菜单共用）
   assert.ok(html.includes('id="ext-submenu"'), '缺少二级选择器容器 #ext-submenu');
   assert.ok(html.includes('id="ext-tab"'), '缺少一级触发器 #ext-tab');
-  assert.ok(/data-ext-tab="skills"/.test(html), '二级选择器缺少「技能」项');
-  assert.ok(/data-ext-tab="plugins"/.test(html), '二级选择器缺少「插件」项');
+  assert.ok(/data-sub-tab="skills"/.test(html), '二级选择器缺少「技能」项');
+  assert.ok(/data-sub-tab="plugins"/.test(html), '二级选择器缺少「插件」项');
   // 两个视图容器也都得在（内容页没合并掉）
   for (const id of ['view-skills', 'view-plugins']) {
     assert.ok(html.includes(`id="${id}"`), `缺少视图容器 ${id}`);
   }
 });
 
-await c.check('二级菜单有展开/收起与定位逻辑', () => {
-  assert.ok(/function initExtSubmenu/.test(appJs), '缺少 initExtSubmenu');
-  assert.ok(/ext-tab/.test(appJs), 'JS 里没有对 #ext-tab 的处理');
-  assert.ok(/qqagent:tabswitched/.test(appJs),
-    '切页签时菜单没有自动收起（switchTab 未派发 qqagent:tabswitched）');
+await c.check('「记录」是存档/记忆的共同父级页签（二级选择器）', () => {
+  // 2026-10-03：存档、记忆合并为一级菜单「记录」，内容仍分两页。
+  const tabs = [...html.matchAll(/data-tab="([\w-]+)"/g)].map((m) => m[1]);
+  assert.ok(tabs.includes('chats'), '找不到一级「记录」页签（data-tab="chats"）');
+  assert.ok(!tabs.includes('memory'),
+    `「记忆」不应再是一级页签，实际一级页签：${tabs.join(' → ')}`);
+  assert.ok(html.includes('id="archive-submenu"'), '缺少二级选择器容器 #archive-submenu');
+  assert.ok(html.includes('id="archive-tab"'), '缺少一级触发器 #archive-tab');
+  assert.ok(/data-sub-tab="chats"/.test(html), '二级选择器缺少「存档」项');
+  assert.ok(/data-sub-tab="memory"/.test(html), '二级选择器缺少「记忆」项');
+  for (const id of ['view-chats', 'view-memory']) {
+    assert.ok(html.includes(`id="${id}"`), `缺少视图容器 ${id}`);
+  }
+  // 两组合并后顶栏从 8 项收到 6 项
+  assert.strictEqual(tabs.length, 6, `一级页签应为 6 项，实际 ${tabs.length}：${tabs.join(' → ')}`);
 });
 
-await c.check('「打开网站」入口已移除', () => {
-  assert.ok(!/id="open-site-btn"/.test(html), 'index.html 里仍有「打开网站」按钮');
-  assert.ok(!/open-site-btn/.test(appJs), 'JS 里仍有 open-site-btn 绑定');
+await c.check('二级菜单是通用实现（两组共用一套逻辑，不是复制两份）', () => {
+  assert.ok(/function initSubmenu\(tabId, menuId, pages\)/.test(appJs), '缺少通用的 initSubmenu');
+  assert.ok(!/function initExtSubmenu/.test(appJs), '旧的单组实现 initExtSubmenu 应该已被泛化替换');
+  assert.ok(/initSubmenu\('archive-tab', 'archive-submenu', \['chats', 'memory'\]\)/.test(appJs),
+    '没有用 initSubmenu 初始化「记录」组');
+  assert.ok(/initSubmenu\('ext-tab', 'ext-submenu', \['skills', 'plugins'\]\)/.test(appJs),
+    '没有用 initSubmenu 初始化「扩展」组');
+  // 两组互斥：展开一组要关掉另一组，否则会互相盖住
+  assert.ok(/for \(const other of submenus\) if \(other !== api\) other\.close\(\)/.test(appJs),
+    '二级菜单之间没有互斥逻辑（展开两组会互相盖住）');
+  // 切页高亮：父级页签要在自家两页都保持高亮
+  assert.ok(/function syncParentTabsActive/.test(appJs), '缺少 syncParentTabsActive');
+});
+
+await c.check('「意见收集」入口已移除', () => {
+  assert.ok(!/id="feedback-btn"/.test(html), 'index.html 里仍有「意见收集」按钮');
+  assert.ok(!/feedback-btn/.test(appJs), 'JS 里仍有 feedback-btn 绑定');
+  // 删按钮后这些都成了没人调用的孤本，一并清掉。
+  // 判据是「有没有被调用/定义」，不能只搜名字 —— 刻意留的说明注释里
+  // 会出现这些词（记录移除决策），那是文档不是死代码。
+  const code = appJs.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const dead of ['openFeedbackModal', 'FB_DRAFT_KEY', 'fbCompressImage', 'fbLoadDraft', 'doUploadFeedback']) {
+    assert.ok(!new RegExp(dead).test(code), `删入口后 ${dead} 成了孤本，应一并移除`);
+  }
+  // 连带死样式（同样跳过注释，那里记着"已移除"）
+  const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.ok(!/\.fb-imgs/.test(cssCode), 'style.css 里仍有 .fb-imgs（意见收集的附图九宫格）');
+});
+
+await c.check('活跃设置可手动输入触发概率且与滑条同步', () => {
+  assert.ok(/id="ac-prob-input"/.test(appJs), '缺少概率输入框 #ac-prob-input');
+  assert.ok(/syncProbBox = \(\)/.test(appJs), '缺少 syncProbBox（滑条 → 输入框方向）');
+  // 输入 → 滑条：按 3 档正向公式反解，**不能**用 tierToSlider(3, pct)
+  // （它把端点取整到档位中心，0% 会落到 20 = 2 档，语义错位）。
+  assert.ok(/const probToPos = \(pct\) =>/.test(appJs), '缺少 probToPos 换算函数');
+  assert.ok(/tier2End \+ \(p \/ 100\) \* \(B2\.tier3End - B2\.tier2End\)/.test(appJs),
+    'probToPos 没有按 3 档正向公式反解（pos = tier2End + pct/100 × 段长）');
+  assert.ok(!/tierToSlider\(\{ contextTier: 3/.test(appJs),
+    'probToPos 用 tierToSlider(3, pct) 换算 —— 端点会被取整到 2/4 档（0% 变"仅关键词响应"）');
+  // 两个方向都要接上：滑条动 → 输入框跟；输入框改 → 滑条跟
+  assert.ok(/onInput:[\s\S]{0,600}syncProbBox\(\)/.test(appJs), '拖滑条时没有同步概率输入框');
+  assert.ok(/function refreshAfterValueChange[\s\S]{0,400}syncProbBox\(\)/.test(appJs),
+    'refreshAfterValueChange 里没有同步概率输入框');
+  assert.ok(/\.ac-prob-row/.test(css), 'style.css 里缺少 .ac-prob-row 样式');
 });
 
 await c.check('添加模态框有独立的口令入口（不再强开市场网页）', () => {

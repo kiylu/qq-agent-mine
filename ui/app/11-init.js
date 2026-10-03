@@ -6,20 +6,33 @@
 //    页面永远空白（轮询走的是"只更新数值"路径，骨架从未建立也救不回来）。
 //    两条路径各维护一份必然再次分叉，所以这里只准调 switchTab。
 //
-// 「扩展」是特例：它是**一级触发器 + 二级选择器**（见 extSubmenu），
-// 点它先展开技能/插件的选择菜单，由二级项再决定切到哪一页。
+// 「记录」「扩展」是特例：它们是**一级触发器 + 二级选择器**（见 initSubmenu），
+// 点它们先展开下拉菜单，由二级项再决定切到哪一页。
 $$('.tab').forEach((tab) => {
-  if (tab.id === 'ext-tab') return;   // 绑定在 initExtSubmenu 里
+  if (tab.classList.contains('has-sub')) return;   // 绑定在 initSubmenu 里
   tab.addEventListener('click', () => switchTab(tab.dataset.tab));
 });
 
-// ── 「扩展」二级选择器（技能 / 插件）──
-// 设计：一级导航只占一个位（原来技能+插件占两位，把顶栏挤到 8 项）。
-// 点击「扩展」→ 展开两个选项 → 选完切到对应页并收起。再次点击「扩展」或
-// 点页面其它地方收起。内容仍是两页独立视图 —— 判定方式不同，混一起看不出类型。
-function initExtSubmenu() {
-  const tab = $('#ext-tab');
-  const menu = $('#ext-submenu');
+// ── 二级选择器（通用：一级触发器 + 下拉菜单）──
+// 设计：一级导航只占一个位。顶栏每多一个平级页签就挤一分，原本 8 项（技能/插件
+// 各占一个、存档/记忆各占一个）已经转不开身；合并成「扩展」「记录」两个入口后是 6 项。
+// 点击 → 展开选项 → 选完切到对应页并收起。再次点击或点页面其它地方收起。
+// 内容仍是各自独立视图 —— 判定方式不同，混一起看不出类型。
+//
+// 不用「包装 window.switchTab」实现切页联动：这些段是普通脚本（拼接后 eval 执行），
+// 顶层 function 声明与 window 属性是否同步并无保证，包装可能不生效。
+// 改成让 switchTab 自己在末尾派发事件 —— 见 00-core.js · switchTab 末尾。
+//
+// @param tabId   一级触发器元素 id（如 'ext-tab'）
+// @param menuId  下拉菜单容器 id（如 'ext-submenu'）
+// @param pages   该菜单管辖的页签名数组（如 ['skills','plugins']）
+
+/** 已初始化的二级菜单组（「记录」「扩展」）。展开一组时用它关掉另一组。 */
+const submenus = [];
+
+function initSubmenu(tabId, menuId, pages) {
+  const tab = $('#' + tabId);
+  const menu = $('#' + menuId);
   if (!tab || !menu) return;
   const items = () => $$('.ext-subitem', menu);
 
@@ -35,10 +48,17 @@ function initExtSubmenu() {
     menu.hidden = !open;
     tab.classList.toggle('ext-open', open);
     tab.setAttribute('aria-expanded', String(open));
-    if (open) { position(); refreshStatus?.(); }
+    // 展开时立刻关掉另一组菜单：两组同时展开会互相盖住
+    if (open) {
+      for (const other of submenus) if (other !== api) other.close();
+      position();
+      refreshStatus?.();
+    }
   };
   const close = () => setOpen(false);
   const isOpen = () => !menu.hidden;
+  const api = { tab, menu, pages, close, isOpen };
+  submenus.push(api);
 
   tab.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -49,7 +69,7 @@ function initExtSubmenu() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       close();
-      switchTab(btn.dataset.extTab);
+      switchTab(btn.dataset.subTab);
     });
   });
   // 点菜单外部收起
@@ -65,19 +85,25 @@ function initExtSubmenu() {
   // 窗口尺寸变化 / 顶栏横向滚动后重新对位
   window.addEventListener('resize', () => { if (isOpen()) position(); });
   $('#tabs')?.addEventListener('scroll', () => { if (isOpen()) position(); }, { passive: true });
-  // 切到别的页签时自动收起（否则菜单悬在别的页面上方）。
-  // 不用「包装 window.switchTab」的做法：这些段是普通脚本（拼接后 eval 执行），
-  // 顶层 function 声明与 window 属性是否同步并无保证，包装可能不生效。
-  // 改成让 switchTab 自己在末尾回调 —— 见 00-core.js · switchTab 末尾的 extSubmenuOnLeave。
+  // 切到别的页签时自动收起（否则菜单悬在别的页面上方）
   document.addEventListener('qqagent:tabswitched', (e) => {
-    if (e.detail !== 'skills' && e.detail !== 'plugins') close();
+    if (!pages.includes(e.detail)) close();
   });
+  return api;
 }
-initExtSubmenu();
 
-/** 供 switchTab 用：把「扩展」高亮为当前页（技能/插件两页都算扩展）。 */
-function syncExtTabActive(name) {
-  $('#ext-tab')?.classList.toggle('active', name === 'skills' || name === 'plugins');
+initSubmenu('archive-tab', 'archive-submenu', ['chats', 'memory']);   // 记录
+initSubmenu('ext-tab', 'ext-submenu', ['skills', 'plugins']);       // 扩展
+
+/**
+ * 供 switchTab 用：把「记录」「扩展」高亮为当前页。
+ * 它们是各自辖下两页的**共同父级** —— 在任一子页都要保持高亮，
+ * 否则从「技能」切到「插件」时顶栏会一个高亮都没有，看着像丢了位置。
+ */
+function syncParentTabsActive(name) {
+  for (const s of submenus) {
+    s.tab?.classList.toggle('active', s.pages.includes(name));
+  }
 }
 
 // ── 启动 ──

@@ -816,8 +816,8 @@ function switchTab(name) {
   if (name === 'plugins') loadModulePage('plugin');
   if (name === 'snowluma') loadSnowlumaPage();
   if (name === 'settings') loadSettings();
-  // 「扩展」是技能/插件的共同父级页签：这两页都要让它保持高亮，
-  // 切走时则由事件通知二级菜单收起（见 11-init.js · initExtSubmenu）。
-  syncExtTabActive?.(name);
+  // 「记录」「扩展」是各自辖下两页的共同父级页签：这两页都要让它们保持高亮，
+  // 切走时则由事件通知二级菜单收起（见 11-init.js · initSubmenu）。
+  syncParentTabsActive?.(name);
   document.dispatchEvent(new CustomEvent('qqagent:tabswitched', { detail: name }));
 }
