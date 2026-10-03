@@ -493,6 +493,207 @@ export class SkillManager {
     return this.getCapabilityProviders('tool.guard', context).map((p) => ({ fn: p.fn, skillId: p.skillId }));
   }
 
+  // ── 缓存影响体检 ────────────────────────────────────────────────────────
+  //
+  // 背景（2026-10-03）：会话从"每轮新开"改成"每轮延续"后，前缀缓存复用
+  // 成了省钱的命脉，但也带来一个外部 Skill/Plugin 容易踩的坑：
+  //   · promptSections(context) 若每轮内容不同 → systemPrompt 逐字节不等
+  //     → orchestrator 判定 fresh（丢上下文），且缓存全不命中。
+  //   · before-llm-messages hook 若**改写既有 system 消息**（而非 push 新消息），
+  //     → 前缀从 system 起就变了 → 缓存击穿；更阴险的是它**不**触发 fresh
+  //     （决策发生在这个 hook 之前），所以界面毫无提示，只是每轮悄悄全价。
+  //
+  // 这里做**确定性**检测（不调大模型、不产生副作用）：用两个"明显不同"的
+  // 上下文各跑一次，比对输出是否变化。检测是启发式，可能存在误报
+  // （比如依赖时间戳的 promptSections），所以只作为"提示"而非"拦截"。
+  //
+  // 探测用的两个上下文刻意在 Skill 最可能读到的字段上拉开差距：
+  //   sessionId / chatKey / chatName / chatId / kind / model / proactive。
+
+  /** 生成一对"明显不同"的探测上下文（用于暴露随上下文变化的实现）。 */
+  static #probeContexts(base = {}) {
+    const common = {
+      skills: base.skills || null,
+      toolsCfg: base.toolsCfg || {},
+      visionEnabled: Boolean(base.visionEnabled),
+      searchEnabled: Boolean(base.searchEnabled),
+      runtimeContext: base.runtimeContext || {},
+      ...base
+    };
+    const a = {
+      ...common,
+      chatKey: 'group_10001', kind: 'group', chatId: '10001', chatName: '缓存体检样例群A',
+      sessionId: 'probe-session-a', model: 'probe-model-a', proactive: false
+    };
+    const b = {
+      ...common,
+      chatKey: 'private_20002', kind: 'private', chatId: '20002', chatName: '缓存体检样例用户B',
+      sessionId: 'probe-session-b', model: 'probe-model-b', proactive: true
+    };
+    return [a, b];
+  }
+
+  /**
+   * 对一个 Skill 做缓存影响体检。
+   * @returns {{
+   *   id: string,
+   *   dynamicSections: boolean,            // promptSections 随上下文变化
+   *   sectionSample: {id:string,title:string}[] | null, // 动态段样例（前 3 条）
+   *   systemRewriteHook: boolean,          // before-llm-messages 改写了既有 system 消息
+   *   pushOnlyHook: boolean,               // before-llm-messages 只 push 新消息（无害）
+   *   unstableAvailable: boolean,          // available() 连续两次结果不一致
+   *   level: 'ok'|'warn'|'danger',
+   *   notes: string[]
+   * }}
+   */
+  cacheImpactOf(id, baseContext = {}) {
+    const skill = this.registry.get(String(id));
+    const notes = [];
+    if (!skill) {
+      return {
+        id: String(id), dynamicSections: false, sectionSample: null,
+        systemRewriteHook: false, pushOnlyHook: false, unstableAvailable: false,
+        level: 'ok', notes: ['Skill 不存在']
+      };
+    }
+    const [ctxA, ctxB] = SkillManager.#probeContexts(baseContext);
+
+    // ── 检测 1：promptSections 是否随上下文变化 ──────────────────────────
+    let dynamicSections = false;
+    let sectionSample = null;
+    if (typeof skill.promptSections === 'function') {
+      const snap = (ctx) => {
+        try {
+          const raw = skill.promptSections(ctx);
+          const arr = Array.isArray(raw) ? raw : [];
+          // 只取"稳定指纹"（id + content 的哈希），排除顺序抖动
+          return arr
+            .filter((s) => s && s.content !== undefined)
+            .map((s) => ({ id: String(s.id || ''), title: String(s.title || ''), fp: `${String(s.id || '')}:${String(s.content)}` }))
+            .sort((x, y) => (x.fp < y.fp ? -1 : x.fp > y.fp ? 1 : 0));
+        } catch (error) {
+          this.#warn(skill.manifest.id, 'promptSections 体检失败', error);
+          return null;
+        }
+      };
+      const a = snap(ctxA);
+      const b = snap(ctxB);
+      if (a && b && a.length + b.length > 0) {
+        const fa = a.map((x) => x.fp).join('\n');
+        const fb = b.map((x) => x.fp).join('\n');
+        if (fa !== fb) {
+          dynamicSections = true;
+          // 样例取两轮里出现过的段（去重前 3 条）
+          const seen = new Map();
+          for (const s of [...a, ...b]) if (!seen.has(s.id)) seen.set(s.id, { id: s.id, title: s.title });
+          sectionSample = [...seen.values()].slice(0, 3);
+          notes.push('promptSections(context) 输出随上下文变化：该 Skill 生效时，systemPrompt 每轮不同 → 会话判定 fresh（丢上下文）+ 缓存全不命中');
+        }
+      }
+    }
+
+    // ── 检测 2：before-llm-messages 是否改写既有 system 消息 ──────────────
+    let systemRewriteHook = false;
+    let pushOnlyHook = false;
+    const hookFn = skill.hooks?.['before-llm-messages'];
+    if (typeof hookFn === 'function') {
+      // 造一条最小可辨识的 messages：index0 = system，index1 = user。
+      // 用 structuredClone 语义的快照比对，能同时捕捉 content 改写、
+      // role 改写、给 system 消息附加字段、以及"替换掉 index0"等情况。
+      const sysText = '__CACHE_PROBE_SYSTEM__';
+      const build = () => ([
+        { role: 'system', content: sysText },
+        { role: 'user', content: '__CACHE_PROBE_USER__' }
+      ]);
+      let r;
+      const messages = build();
+      try {
+        const out = hookFn({ ...ctxA, messages }, { skillId: skill.manifest.id });
+        // 异步 hook：不阻塞 HTTP，交给人工/异步通道判定
+        r = (out && typeof out.then === 'function') ? { async: true } : { async: false, messages };
+      } catch (error) {
+        this.#warn(skill.manifest.id, 'before-llm-messages 体检失败', error);
+        r = { error: true };
+      }
+      if (r.async) {
+        notes.push('before-llm-messages 为异步实现，无法同步判定是否改写 system（建议人工确认）');
+      } else if (!r.error) {
+        const after = r.messages;
+        const sys0 = after[0];
+        // 既有 system 是否被改动：要么 index0 不再是同一条 system，要么内容变了
+        const sysChanged = !(
+          sys0
+          && sys0.role === 'system'
+          && String(sys0.content) === sysText
+          && Object.keys(sys0).length === 2
+        );
+        const lenChanged = after.length !== 2;
+        if (sysChanged) {
+          systemRewriteHook = true;
+          notes.push('before-llm-messages 改写了既有 system 消息：该 hook 不触发 fresh 判定，但会让 system 之后的前缀缓存全部失效 —— 每轮按全价计费且界面无提示（最隐蔽）');
+        } else if (lenChanged) {
+          pushOnlyHook = true;
+          notes.push('before-llm-messages 只新增消息（未改动既有 system）：对会话延续无害；但注入内容若每轮不同，仍会击穿下一轮前缀缓存');
+        }
+      }
+    }
+
+    // ── 检测 3：available() 连续两次是否稳定 ─────────────────────────────
+    let unstableAvailable = false;
+    const availFn = skill.available;
+    if (typeof availFn === 'function') {
+      const probe = (ctx) => {
+        try {
+          const r = availFn(ctx);
+          return r === undefined ? 'undef' : JSON.stringify(r);
+        } catch (error) {
+          return `err:${error?.message ?? error}`;
+        }
+      };
+      if (probe(ctxA) !== probe(ctxA)) {
+        unstableAvailable = true;
+        notes.push('available() 连续两次结果不一致：工具集可能抖动 → sameToolNames 判不等 → 会话变 fresh');
+      }
+    }
+
+    const level = (dynamicSections || systemRewriteHook) ? 'danger'
+      : (pushOnlyHook || unstableAvailable) ? 'warn' : 'ok';
+    if (level === 'ok') notes.push('未发现影响会话延续/缓存复用的实现特征');
+
+    return {
+      id: skill.manifest.id,
+      name: skill.manifest.name,
+      dynamicSections,
+      sectionSample,
+      systemRewriteHook,
+      pushOnlyHook,
+      unstableAvailable,
+      level,
+      notes
+    };
+  }
+
+  /** 批量体检（默认只体检当前生效中的 Skill，避免噪音）。 */
+  cacheImpactReport(baseContext = {}, { onlyActive = true } = {}) {
+    const out = [];
+    for (const skill of this.registry.list()) {
+      if (!skill.manifest?.id) continue;
+      if (onlyActive) {
+        const st = this.isActive(skill.manifest.id, baseContext);
+        // 加载失败/未启用的不体检：它们眼下不参与组装，报告里略过即可
+        if (!st.active) continue;
+      }
+      out.push(this.cacheImpactOf(skill.manifest.id, baseContext));
+    }
+    const summary = {
+      total: out.length,
+      danger: out.filter((r) => r.level === 'danger').length,
+      warn: out.filter((r) => r.level === 'warn').length,
+      ok: out.filter((r) => r.level === 'ok').length
+    };
+    return { skills: out, summary };
+  }
+
   // ── 汇总 ────────────────────────────────────────────────────────────────
 
   /** 给 /api/status 用的紧凑摘要。 */

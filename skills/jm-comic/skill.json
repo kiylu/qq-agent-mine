@@ -1,0 +1,158 @@
+{
+  "id": "jm-comic",
+  "name": "禁漫漫画下载",
+  "version": "2.0.0",
+  "apiVersion": 1,
+  "category": "media",
+  "author": "QQ Agent + DSH",
+  "description": "群友发来禁漫天堂（JMComic）漫画 ID 时，后台异步下载整本、还原竖切打乱、合成 PDF，并上传到提出请求的那个会话（群文件/私聊文件）。下载在后台跑，不占用机器人对话。",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": [],
+  "permissions": [
+    "web_fetch"
+  ],
+  "settings": {
+    "enabled": true,
+    "downloadDir": "",
+    "domains": "",
+    "maxPages": 500,
+    "multiChapter": true,
+    "concurrency": 4,
+    "timeoutSeconds": 30,
+    "restore": true,
+    "outputFormat": "pdf",
+    "deleteImagesAfterPdf": false,
+    "pdfQuality": 85,
+    "pdfMaxDim": 0,
+    "uploadMode": "request",
+    "maxUploadMB": 200,
+    "rejectOversize": false,
+    "checkQuota": true,
+    "allowIds": "",
+    "keepDays": 7,
+    "groupFileKeepDays": 0,
+    "pythonPath": "",
+    "progress": true
+  },
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "label": "启用下载功能",
+      "description": "关掉后所有工具（下载/进度/收藏/自检）都不可用。"
+    },
+    "outputFormat": {
+      "type": "enum",
+      "values": ["pdf", "images"],
+      "label": "输出格式",
+      "description": "pdf = 合成一个多页 PDF 后上传（推荐，需要 Python+Pillow）。images = 只保存原始图片、不上传 PDF，零依赖。"
+    },
+    "restore": {
+      "type": "boolean",
+      "label": "还原竖切打乱（需要 Pillow）",
+      "description": "禁漫对较新本子的图片做了竖条切块打乱，开启后按站点返回的 scramble_id 还原成正常可读的图。关掉则不还原、速度最快。"
+    },
+    "deleteImagesAfterPdf": {
+      "type": "boolean",
+      "label": "合成 PDF 后删除原图（省空间）",
+      "description": "开启后：PDF 生成成功才删除那些原始图片，本地只留 PDF。⚠️ 删了就不再有原图，之后无法改画质重做、也不能单张浏览；只有在 PDF 生成失败时才自动保留原图。默认关闭。仅在「输出格式 = pdf」时生效。"
+    },
+    "uploadMode": {
+      "type": "enum",
+      "values": ["request", "group", "private", "off"],
+      "label": "文件上传到哪",
+      "description": "request = 在哪个会话提出就传回哪里（群文件/私聊文件）；group = 只传群；private = 只传私聊；off = 不上传，只存本地。"
+    },
+    "maxUploadMB": {
+      "type": "number",
+      "label": "单文件上传上限（MB）",
+      "description": "超过这个大小的 PDF 会被分卷或拒绝（由下面那个开关决定）。默认 200 MB。"
+    },
+    "rejectOversize": {
+      "type": "boolean",
+      "label": "超限时直接拒绝（不分卷）",
+      "description": "开启：超过上限就不上传，只告诉你文件太大。关闭：自动切成多个 .partNofM 分卷逐个上传。默认关闭（自动分卷）。"
+    },
+    "checkQuota": {
+      "type": "boolean",
+      "label": "上传前检查群文件配额",
+      "description": "上传前先查群文件数量与空间，不够就提前说明，避免传到一半失败。默认开启。"
+    },
+    "allowIds": {
+      "type": "string",
+      "label": "允许触发的 QQ（留空=所有人）",
+      "description": "填了就只允许管理员/群主和这里列出的 QQ 触发下载。多个用逗号分隔。留空则任何人都能触发。"
+    },
+    "keepDays": {
+      "type": "number",
+      "label": "本地文件保留天数",
+      "description": "超过这个天数的本地漫画目录会被自动清理（每 6 小时检查一次）。填 0 = 永不清理。默认 7 天。"
+    },
+    "groupFileKeepDays": {
+      "type": "number",
+      "label": "群文件保留天数（到期自动删）",
+      "description": "上传后超过这个天数，机器人会自动删除自己上传的群文件，避免占满群空间。填 0 = 不自动删除。注意：删除只影响群文件库，群友已下载的副本收不回来。"
+    },
+    "pythonPath": {
+      "type": "string",
+      "label": "Python 解释器路径（留空自动探测）",
+      "description": "还原与 PDF 需要 Python + Pillow。留空时自动探测（py 启动器 / PATH / 常见安装位置）。探测不到也不影响下载，只是不生成 PDF。"
+    },
+    "pdfQuality": {
+      "type": "number",
+      "label": "PDF 画质（30-95）",
+      "description": "嵌入 PDF 的 JPEG 质量。默认 85。调低可以显著减小文件体积。"
+    },
+    "pdfMaxDim": {
+      "type": "number",
+      "label": "PDF 单页最长边（像素，0=原尺寸）",
+      "description": "调小可以缩小体积，例如填 1600。默认 0（保持原尺寸）。"
+    },
+    "downloadDir": {
+      "type": "string",
+      "label": "下载到哪个目录（留空用默认）",
+      "description": "留空时自动用 resources/app/data/jm-comic/，每本一个子文件夹。可填绝对路径，例如 D:\\Comic。"
+    },
+    "domains": {
+      "type": "string",
+      "multiline": true,
+      "label": "备用站点域名（可留空）",
+      "description": "一行一个。禁漫域名经常更换，默认那批连不上时，把可用的域名填在这里，例如 18comic.vip"
+    },
+    "maxPages": {
+      "type": "number",
+      "label": "每话最多下载多少页",
+      "description": "防止超长本子下载太久、占用磁盘。默认 500 页，超出部分会跳过并在结果里说明。"
+    },
+    "multiChapter": {
+      "type": "boolean",
+      "label": "多章节本子下载全部章节",
+      "description": "开启后把本子每一话都下载并合并进同一个 PDF；关掉只下第一话。默认开启。"
+    },
+    "concurrency": {
+      "type": "number",
+      "label": "同时下载几张图",
+      "description": "默认 4。调太大容易被站点限速或断连，建议不超过 8。"
+    },
+    "timeoutSeconds": {
+      "type": "number",
+      "label": "单次请求超时（秒）",
+      "description": "默认 30 秒。网络慢可以调大。"
+    },
+    "progress": {
+      "type": "boolean",
+      "label": "在群里报进度",
+      "description": "开启后下载/还原过程中每隔一会儿报一次进度，避免群友以为机器人卡死。关闭则只在结束时说一句。"
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "jm-comic-rules-static",
+        "title": "禁漫漫画下载",
+        "priority": 50,
+        "content": "本群开了「禁漫漫画下载」技能（异步）。有人发来禁漫漫画 ID（纯数字，如 123456，也常写成 jm123456 或 /album/123456）并想下载时，调用 jm-comic__download_album 并把数字放进 album_id。工具调用后**立刻返回**，下载/还原/合成/上传都在后台跑，完成后会自动发消息——不要因为没立刻看到结果就重复调用同一个 ID。只在对方明确想下载时调用；随便出现的数字要先问一句确认。失败时如实转达原因，不要编造成功。这是成人向内容，只在群友主动索要时处理。"
+      }
+    ]
+  }
+}

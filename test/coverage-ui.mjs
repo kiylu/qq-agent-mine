@@ -388,4 +388,27 @@ await c.check('思维链角色查表的 key 与 kindOf 返回值对齐（防 und
   }
 });
 
+// ── 9. 技能页缓存影响徽标 ─────────────────────────────────────────────────
+// 会话延续改造后，外部 Skill 的动态 promptSections / 改写 system 的
+// before-llm-messages 会打断延续或击穿缓存。技能页要给出可见提示。
+c.section('9. 技能页缓存影响徽标');
+await c.check('技能页拉取体检结果并存入 state', () => {
+  assert.ok(appJs.includes('/api/skills/cache-impact'), '应请求 /api/skills/cache-impact');
+  assert.ok(appJs.includes('state.skillCacheImpact'), '体检结果应存入 state.skillCacheImpact');
+});
+await c.check('卡片渲染缓存影响徽标，且只在非 ok 时出现', () => {
+  assert.ok(appJs.includes('skill-cache-badge'), '应有缓存影响徽标（skill-cache-badge）');
+  assert.ok(/ci\.level\s*!==\s*'ok'/.test(appJs), '徽标应仅在 level !== ok 时渲染');
+  // 档位类名是动态拼的：skill-cache-${ci.level}（danger / warn）
+  assert.ok(/skill-cache-\$\{esc\(ci\.level\)\}/.test(appJs), '应有动态档位类名 skill-cache-${ci.level}');
+  assert.ok(/'danger'/.test(appJs) && /'warn'/.test(appJs), '应区分 danger / warn 文案');
+});
+await c.check('徽标样式齐备且用主题变量上色', () => {
+  assert.ok(css.includes('.skill-cache-badge'), 'CSS 缺少 .skill-cache-badge');
+  assert.ok(css.includes('.skill-cache-danger'), 'CSS 缺少 .skill-cache-danger');
+  assert.ok(css.includes('.skill-cache-warn'), 'CSS 缺少 .skill-cache-warn');
+  assert.ok(/\.skill-cache-danger[\s\S]{0,120}var\(--err/.test(css), 'danger 应用 --err 上色');
+  assert.ok(/\.skill-cache-warn[\s\S]{0,120}var\(--warn/.test(css), 'warn 应用 --warn 上色');
+});
+
 c.finish();

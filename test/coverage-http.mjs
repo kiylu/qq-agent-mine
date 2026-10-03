@@ -269,6 +269,23 @@ c.section('4. Skill / 工具');
     }
   });
 
+  await c.check('GET /api/skills/cache-impact：返回缓存影响体检报告', async () => {
+    const r = await hit('GET', '/api/skills/cache-impact');
+    assert.equal(r.status, 200);
+    assert.ok(r.data.ok === true, '应带 ok:true');
+    assert.ok(Array.isArray(r.data.skills), '应返回 skills 数组');
+    assert.ok(r.data.summary && typeof r.data.summary === 'object', '应返回 summary');
+    for (const s of r.data.skills) {
+      assert.ok(s.id, '每条应有 id');
+      assert.ok(['ok', 'warn', 'danger'].includes(s.level), `level 取值非法：${s.level}`);
+      assert.equal(typeof s.dynamicSections, 'boolean');
+      assert.equal(typeof s.systemRewriteHook, 'boolean');
+    }
+    // onlyActive=0：连未启用的也体检，条目数应不少于默认
+    const all = await hit('GET', '/api/skills/cache-impact?onlyActive=0');
+    assert.ok(all.data.skills.length >= r.data.skills.length, 'onlyActive=0 不应少于默认');
+  });
+
   await c.check('GET /api/tools/availability：与工具清单同源，且给出原因码', async () => {
     const r = await hit('GET', '/api/tools/availability');
     assert.equal(r.status, 200);

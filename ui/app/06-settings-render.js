@@ -1049,6 +1049,14 @@ async function loadSkillsStatus() {
   } catch {
     /* 取不到就保持原值，不覆盖成空列表造成"条目都不见了"的假象 */
   }
+  // 缓存影响体检：单独拉一次（失败不影响主列表 —— 体检是"锦上添花"，
+  // 拿不到徽标就不显示，不能让技能列表整个变空）。
+  try {
+    const ci = await api('/api/skills/cache-impact');
+    state.skillCacheImpact = new Map((ci.skills || []).map((s) => [s.id, s]));
+  } catch {
+    state.skillCacheImpact = new Map();
+  }
 }
 
 /**
@@ -1376,11 +1384,16 @@ function renderModulePage(kind) {
       ? `<button class="mcard-gear" data-skill-id="${esc(s.id)}" title="设置（${allFields.length} 项）" aria-label="打开 ${esc(s.name)} 的设置">⚙</button>`
       : '';
     const uploadBtn = `<button class="mcard-upload" data-skill-id="${esc(s.id)}" data-skill-kind="${kind}" title="上传到市场" aria-label="上传 ${esc(s.name)} 到市场">⬆</button>`;
+    // 缓存影响徽标：只在 danger/warn 时出现（ok 不打扰）；悬停展示完整原因。
+    const ci = state.skillCacheImpact?.get(s.id);
+    const ciBadge = (ci && ci.level !== 'ok')
+      ? `<span class="skill-cache-badge skill-cache-${esc(ci.level)}" title="${esc((ci.notes || []).join('\n'))}">${ci.level === 'danger' ? '⚠ 影响会话连续性' : '△ 可能影响缓存'}</span>`
+      : '';
     const haystack = [s.id, s.name, s.description, s.dir].filter(Boolean).join(' ').toLowerCase();
     return `
     <div class="mcard ${stateCls}" data-skill-id="${esc(s.id)}" data-search="${esc(haystack)}" role="button" tabindex="0" title="${esc(stateTitle)}">
       <div class="mcard-main">
-        <div class="mcard-name">${esc(s.name)} <span class="skill-card__ver">v${esc(s.version)}</span></div>
+        <div class="mcard-name">${esc(s.name)} <span class="skill-card__ver">v${esc(s.version)}</span>${ciBadge}</div>
         ${(s.toolIds || []).length ? `<div class="mcard-tools" title="本技能注册的工具 id">${(s.toolIds || []).map((id) => `<code class="mcard-tool-id">${esc(id)}</code>`).join('')}</div>` : ''}
         <div class="mcard-desc">${esc(s.description || '（没有写介绍）')}</div>
         ${errLine ? `<div class="mcard-err">${esc(errLine)}</div>` : ''}

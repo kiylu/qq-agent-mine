@@ -1048,6 +1048,19 @@ export function createRoutes(deps) {
       }
     },
     {
+      // 缓存影响体检：对生效中的 Skill 做确定性检测，找出那些
+      // "会让会话延续失效 / 击穿前缀缓存"的实现特征（动态 promptSections、
+      // 改写 system 的 before-llm-messages hook、available 抖动）。
+      // onlyActive === '0' 时连未启用的也一起体检（排查时用）。
+      method: 'GET', pattern: '/api/skills/cache-impact',
+      handler: async ({ req, res, json, url }) => {
+        const context = skillRuntimeContext();
+        const onlyActive = url?.searchParams?.get('onlyActive') !== '0';
+        const report = skillManager.cacheImpactReport(context, { onlyActive });
+        return json(res, 200, { ok: true, ...report });
+      }
+    },
+    {
       // 工具可用性总览：明确告诉 UI "这个工具为什么没生效"
       method: 'GET', pattern: '/api/tools/availability',
       handler: async ({ res, json }) => {

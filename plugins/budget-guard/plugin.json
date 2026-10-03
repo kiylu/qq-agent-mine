@@ -1,0 +1,56 @@
+{
+  "id": "budget-guard",
+  "name": "预算哨兵",
+  "version": "1.0.2",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "盯着每日 AI 花费：到预算的 50%/80%/100% 档位时主动私聊管理员预警（附今日烧钱会话排行）。数据来自本机 sessions 统计与 cost-guard，不外发。预算来源：插件设置 dailyBudget 优先，其次核心配置 budget.dailyCostYuan；都没设置则不监控（状态面板里显示「未设置预算」）。",
+  "author": "QQ Agent",
+  "entry": "index.js",
+  "permissions": [
+    "web_fetch"
+  ],
+  "enabledByDefault": true,
+  "capabilities": [
+    "status.budget-guard"
+  ],
+  "settings": {
+    "enabled": true,
+    "dailyBudget": 0,
+    "thresholds": "50,80,100",
+    "checkIntervalMin": 5,
+    "notifyTarget": ""
+  },
+  "configSchema": {
+    "enabled": {
+      "type": "boolean",
+      "label": "启用监控",
+      "description": "关闭后不检查、不预警。",
+      "group": "预算"
+    },
+    "dailyBudget": {
+      "type": "number",
+      "label": "每日预算（元）",
+      "description": "优先于核心配置 budget.dailyCostYuan。0 = 跟随核心配置；两边都没设置则不监控。",
+      "group": "预算"
+    },
+    "thresholds": {
+      "type": "string",
+      "label": "预警档位（%）",
+      "description": "逗号分隔的百分比档位，达到任一档位私聊提醒一次（每天每档只提醒一次）。默认 50,80,100。",
+      "group": "预算"
+    },
+    "checkIntervalMin": {
+      "type": "number",
+      "label": "检查间隔（分钟）",
+      "description": "多久算一次今日花费。默认 5 分钟，最小 1。",
+      "group": "检查与通知"
+    },
+    "notifyTarget": {
+      "type": "string",
+      "label": "预警发到哪",
+      "description": "留空 = 自动私聊主人名单第一个人。也可以指定会话键：private:QQ号 或 group:群号。",
+      "group": "检查与通知"
+    }
+  }
+}

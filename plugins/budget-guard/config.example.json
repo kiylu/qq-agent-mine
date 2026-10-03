@@ -1,0 +1,14 @@
+{
+  "skills": {
+    "budget-guard": {
+      "enabled": true,
+      "settings": {
+        "enabled": true,
+        "dailyBudget": 100,
+        "thresholds": "50,80,100",
+        "checkIntervalMin": 5,
+        "notifyTarget": ""
+      }
+    }
+  }
+}

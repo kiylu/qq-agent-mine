@@ -82,7 +82,57 @@ else if (prevBuf.systemPrompt !== systemPrompt) freshReason = '系统提示已�
 
 ---
 
-## 四、给外部开发者的结论
+## 五、缓存影响体检工作台（2026-10-03 追加）
+
+上面两处冲突面（动态 `promptSections`、改写 system 的 `before-llm-messages`）
+原本只能靠人工读代码判断。现在核心提供一个**确定性**体检接口，把风险直接标在技能/插件页上。
+
+### 接口
+
+```
+GET /api/skills/cache-impact              # 只体检当前生效中的扩展
+GET /api/skills/cache-impact?onlyActive=0 # 连未启用的也一起体检（排查用）
+```
+
+返回：
+
+```jsonc
+{
+  "ok": true,
+  "skills": [{
+    "id": "xxx", "name": "xxx",
+    "dynamicSections": true,        // promptSections 随上下文变化
+    "sectionSample": [{ "id": "...", "title": "..." }],
+    "systemRewriteHook": false,     // before-llm-messages 改写了既有 system 消息
+    "pushOnlyHook": true,           // 只 push 新消息（无害，但注入内容需稳定）
+    "unstableAvailable": false,     // available() 连续两次结果不一致
+    "level": "warn",                // ok | warn | danger
+    "notes": ["..."]                // 人话解释 + 后果
+  }],
+  "summary": { "total": 1, "danger": 0, "warn": 1, "ok": 0 }
+}
+```
+
+### 判定口径
+
+| 检测项 | 方法 | 命中后果 |
+|---|---|---|
+| `dynamicSections` | 用两个明显不同的上下文各跑一次 `promptSections(ctx)`，比对输出指纹 | **danger**：每轮 fresh（丢上下文）+ 缓存全不命中 |
+| `systemRewriteHook` | 造一条最小 messages（index0=system）跑一次 hook，比对既有的 index0 是否被改动 | **danger**：不触发 fresh，但击穿前缀缓存、每轮全价，界面无提示 |
+| `pushOnlyHook` | hook 只新增消息、未改既有 system | **warn**：对延续无害；注入内容若每轮不同仍击穿下一轮缓存 |
+| `unstableAvailable` | 连续两次 `available()` 结果比对 | **warn**：工具集抖动 → fresh |
+
+检测**不调用大模型**，纯确定性；属启发式，可能有误报（如依赖时间戳的实现），
+因此只作为**提示**——`ok` 不显示徽标，`warn`/`danger` 才在技能卡片名后出现徽标。
+
+### 边界
+
+- 异步 `before-llm-messages`（返回 Promise）无法同步判定，报告里给"建议人工确认"提示，不误判为改写。
+- 只比对 **index0** 的 system（本项目的 system 始终是首条，`prompt.js` 组装约定）。
+
+---
+
+## 六、给外部开发者的结论
 
 - **可以放心使用现有 Skill / Plugin 契约**：manifest、hooks、API、market 安装流程均未变。
 - **一个建议**：若 Skill 需要注入"每轮会变"的内容，避免放进 `promptSections`
