@@ -209,8 +209,22 @@ npm run setup -- --no-portable
 - 本项目通过非官方方式接入 QQ 协议，**账号存在被风控/封禁的风险**，建议使用小号
 - SnowLuma 是独立第三方项目，受其自身 EULA 约束，本项目不分发其代码
 - 用户自行承担使用本项目的所有风险
-### 分发前脱敏
-分享自己的部署副本前执行：
+### 分发前脱敏 / 一键打包
+**推荐：一键产出干净压缩包**（不碰你正在用的数据，安全、可重复）：
+```bash
+npm run pack:release            # 出 dist/qq-agent-<版本>-<日期>-full.zip（带 electron，开箱即用，约 115 MB）
+npm run pack:release:slim       # 出 -slim.zip（不带依赖，接收方自己 npm install，约 2 MB）
+npm run pack:release -- --dry-run   # 先看会剔除哪些、打多少
+```
+打包脚本会把项目复制到临时暂存目录 → 剔除使用痕迹与第三方大件 → 压缩 → 删暂存。
+**你的 `data/`、登录态、配置一个字都不动**（对比下面那个就地消毒脚本）。
+
+自动剔除：`data/`（聊天记录/记忆/含 Key 的配置）、`runtime/`（1.6 GB 便携 QQ + 其缓存）、
+`snowluma/`（110 MB 第三方）、`community.key`、`.git/`、`.workbuddy/`、`test/` `doc/` `scripts/`，
+以及 `node_modules` 里的纯开发工具（electron-builder / jsdom 等，约省 100 MB）。
+接收方解压后跑一次 `npm run setup` 即可补回 SnowLuma 与便携 QQ。
+
+**另一种：就地消毒**（想直接把自己这份部署副本发出去时用；**会清空本机数据**）：
 ```bash
 node scripts/sanitize-release.mjs --dry-run   # 先看会清理什么
 node scripts/sanitize-release.mjs             # 清空 Key / 白名单 / 存档 / 登录态
