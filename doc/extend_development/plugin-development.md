@@ -17,6 +17,7 @@
 | 需要实现什么 | 必须附加 | 里面有什么 |
 |---|---|---|
 | **任何功能**（建议总是附加） | [skill-reference.md](./skill-reference.md) | 共同机制完整参考：api 对象全表、ctx 全量字段、能力/钩子的完整语义、硬约束清单（§14）、完整示例（§16）。**§4 的能力契约表在本文是权威版，但其余细节以它为准** |
+| **用了 `hooks`**（必附加） | [caching-contract.md](./caching-contract.md) | **缓存契约**：为什么不能改写已有 system 消息、`available()` 为什么要稳。不遵守**界面无任何提示**，只会静默让成本翻倍 —— 见本文 §3.3 |
 | 调用 QQ 接口（查群成员、禁言、踢人、撤回、发说说、群文件、群相册……） | [snowluma-capabilities.md](./snowluma-capabilities.md) | 协议端全部 **73 个 OneBot 接口的逐条参数表与返回示例**。本文 §8.2 只讲了调用姿势，**不含参数表** |
 | 插件要消费/包装视频理解 | [video-modes.md](./video-modes.md) | 视频理解两条路（原生直读 / ffmpeg 抽帧）的分工、配置项与边界 —— 提供 `video.frames` 类能力前先读 |
 | 想让 AI 理解整个系统的设计（可选） | [skill-system.md](./skill-system.md) | 架构总览：状态模型、能力系统、判定链 |
@@ -212,6 +213,60 @@ export const hooks = {
 3. **不发送消息、不发请求、不重试** —— 需要这些就去注册工具（LLM 型）
 4. 钩子里抛错只影响自己；但反复抛错会在 UI 上留下"上次出错"记录
 5. 钩子**不能覆盖核心安全规则**：`prompt.sections` 的 `priority` 上限 99，技能片段永远排在核心规则之后
+6. **`before-llm-messages` 不得改写已有的 system 消息** —— 见下方铁律二
+
+### 3.3 ⚠️ 缓存铁律（改 messages 前必读）
+
+`before-llm-messages` 是**唯一能改"已拼好 messages"的扩展点**，也是最容易
+把成本搞坏的扩展点。完整说明见 [caching-contract.md](./caching-contract.md)，
+这里只列必须记住的两条：
+
+**铁律二：不要改写已有消息的字节**
+
+```js
+// ❌ 绝对不要这样：改写了既有 system 消息的字节
+const sys = messages.find(m => m.role === 'system');
+if (sys) sys.content += '\n\n【待办】' + JSON.stringify(pending);
+```
+
+这么做的后果**在界面上完全看不出来**：
+
+| 表现 | 是否受影响 |
+|---|---|
+| 会话照常延续（卡片显示「续用」） | ✅ 看起来正常 —— 判定在钩子之前就跑完了 |
+| 前缀缓存命中 | ❌ **每轮全不命中**，每轮按全价重算 |
+| 界面提示 / 报错 | ❌ **完全没有** |
+
+也就是说，你会先看到会话列表一切正常，然后某天对账发现成本翻了好几倍。
+
+**安全的做法**：
+
+```js
+// ✅ 追加新消息，不动已有的字节
+messages.push({ role: 'system', content: '【脑内闪过】' + association });
+
+// ✅ 更好：根本不用这个钩子，把能力做成 providers，模型按需调用
+```
+
+注意：**push 进去的内容会进入会话缓冲**，成为下一轮前缀的一部分 ——
+所以 push 的内容**也必须每轮稳定**，否则同样击穿下一轮缓存。
+
+**铁律三：`available()` 要稳定**
+
+```js
+// ❌ 首探与后台探测结果可能不同 → 工具集抖动 → 每轮触发 fresh
+export function available() { return detect(); }
+
+// ✅ 探测一次后固定
+let _cached = null;
+export function available() {
+  if (_cached === null) _cached = detect();
+  return _cached;
+}
+```
+
+**上架前自查**：调 `GET /api/skills/cache-impact`，确认 `level` 是 `ok`。
+判定为 `warn` / `danger` 时 UI 会在卡片名后显示徽标。
 
 ---
 
@@ -455,6 +510,10 @@ try {
 - [ ] 没有在钩子里做网络请求 / 下载 / 模型调用（5 秒超时会被跳过）
 - [ ] 没有在钩子里发消息或重试
 - [ ] `before-tool` 的否决返回的是 `{ block: true, reason }`
+- [ ] **`before-llm-messages` 没有改写已有 system 消息**（`sys.content += ...`）—— 见 §3.3 铁律二
+- [ ] 对 `messages` 的改动是 **push 新条目**，不是原地改写已有条目的字节
+- [ ] push 进去的内容**每轮稳定**（它会进入缓冲成为下一轮前缀）
+- [ ] `available()` 探测一次后永远返回同一个值 —— 见 §3.3 铁律三
 
 **运行期**
 - [ ] `available()` 是同步的
@@ -462,6 +521,9 @@ try {
 - [ ] 发消息走 `sender`，没有直接调 `onebot.send*`
 - [ ] 操作 QQ 的写接口有权限判断 + `try/catch`
 - [ ] 密钥标了 `secret: true`，代码里没有硬编码
+
+**上线前**
+- [ ] 调 `GET /api/skills/cache-impact` 确认 `level` 是 `ok`（不是 `warn` / `danger`）
 
 ---
 
@@ -593,6 +655,7 @@ export const hooks = {
 交给 AI 时的附加文档选择见文首的「📎」一节。
 
 - [skill-development.md](./skill-development.md) —— LLM 型技能开发（注册工具）
+- [caching-contract.md](./caching-contract.md) —— **缓存契约**（改 messages 前必读，见本文 §3.3）
 - [skill-reference.md](./skill-reference.md) —— 共同机制完整参考（清单、生命周期、能力系统、ctx 全量字段、硬约束清单、上架）
 - [snowluma-capabilities.md](./snowluma-capabilities.md) —— 协议端 73 个接口的逐条参数表
 - [skill-system.md](./skill-system.md) —— 架构总览

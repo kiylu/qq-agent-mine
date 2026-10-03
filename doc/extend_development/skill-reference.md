@@ -409,6 +409,15 @@ export function available() {
 }
 ```
 
+> ⚠️ **这个写法的代价：可用性会"翻转"**。上面这段在后台探测出结果后，
+> `available()` 的返回值可能从 `true` 变成 `{ ok: false }`（或反过来）。
+> 工具集是**集合比较**，一旦名字集合变了就会触发会话 fresh ——
+> 即"每轮都被当成新会话，缓存全不命中"。
+>
+> 所以：**探测结果一旦确定就要写进 `ffmpegOk` 并永不反悔**（像上面这样只探测一次）。
+> 千万不要写成"每次调用都重新探测"或"探测失败就临时返回 false 再重试"。
+> 详见 [caching-contract.md](./caching-contract.md) 铁律三。
+
 真实参考实现：`skills/video-frames/index.js`。
 
 ---
@@ -1126,7 +1135,7 @@ my-skill.zip
 |---|---|
 | `id: 'my:tool'` | `id: 'my-tool'` 或 `id: 'my_tool'` |
 | `description: '处理数据'` | `description: '把 CSV 转成表格。当用户上传 csv 或说"转表格"时使用。'` |
-| `export function available() { return checkAsync(); }` | 同步返回；异步探测用"乐观放行 + 缓存结果" |
+| `export function available() { return checkAsync(); }` | 同步返回；异步探测用"乐观放行 + 缓存结果"，且**结果只探测一次**（见 §3.1 警告） |
 | `setup(api) { const c = api.config(); }` | `let cfg = () => ({}); setup 里 cfg = api.config;` |
 | `execute() { return doThing(); }` | `async execute(_ctx, args) { ... return {content} }` |
 | 直接 `fetch(...)` | 先声明 `web_fetch`，再用 `api.fetch(...)` |
@@ -1134,6 +1143,8 @@ my-skill.zip
 | 绕过 `ctx.sender` 直调 `send_group_msg` | 用 `ctx.sender.sendTextBatch`（有队列/限频/去重） |
 | `ctx.onebot.call(...)` 不 try/catch | 包 try/catch（协议端失败会抛错） |
 | `prompt` 写 3000 字 | 两三句话，写清触发时机 |
+| `promptSections(ctx)` 返回带时间戳/轮次/随机数 | 返回每轮**逐字节相同**的内容；变化的做成工具（[caching-contract.md](./caching-contract.md) 铁律一） |
+| `sys.content += '...'`（改写已有 system 消息） | `messages.push({ role:'system', content })` —— 改写会静默击穿缓存（铁律二） |
 | 工具里 `JSON.parse` 不兜底 | 用 `api.utils.safeJsonParse` 或 try/catch |
 
 ---

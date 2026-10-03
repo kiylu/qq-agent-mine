@@ -16,6 +16,7 @@
 | 需要实现什么 | 必须附加 | 里面有什么 |
 |---|---|---|
 | **任何功能**（建议总是附加） | [skill-reference.md](./skill-reference.md) | 共同机制完整参考：api 对象全表、ctx 全量字段（store/memory/stickers/session/reminders 的每个方法）、硬约束清单（§14）、完整示例（§16）。**本文为了篇幅只摘了常用部分** |
+| **任何功能**（建议总是附加） | [caching-contract.md](./caching-contract.md) | **缓存契约三条铁律**：提示词必须逐字节稳定、不能改写已有 system 消息、`available()` 要稳定。不遵守会导致会话无法延续 + 成本翻倍，且**界面无任何提示** |
 | 调用 QQ 接口（查群成员、禁言、踢人、撤回、发说说、群文件、群相册……） | [snowluma-capabilities.md](./snowluma-capabilities.md) | 协议端全部 **73 个 OneBot 接口的逐条参数表与返回示例**（每个接口的字段名、类型、必填）。本文 §5.2 只讲了调用姿势，**不含参数表** |
 | 想让 AI 理解整个系统的设计（可选） | [skill-system.md](./skill-system.md) | 架构总览：状态模型、能力系统、判定链 |
 | 零基础人类阅读（可选，AI 不需要） | [skill-guide-for-beginners.md](./skill-guide-for-beginners.md) | 大白话教程 |
@@ -343,7 +344,15 @@ try {
 - `priority` **上限 99**，且技能片段永远排在核心规则之后 —— 技能不能覆盖安全规则（审计会检查这一点）
 - 数字越大越靠前（同一批技能之间）
 - 两三句话写清"什么时候该注意什么"就够了，不要写成长文
-- 也可以导出 `promptSections(ctx)` 函数，根据运行期状态动态生成
+- 也可以导出 `promptSections(ctx)` 函数，根据运行期状态动态生成 ——
+  **但返回值必须每轮逐字节相同**，见 [caching-contract.md](./caching-contract.md) 铁律一。
+  内容会变的话，做成工具让模型按需查，别放进提示词。
+
+> ⚠️ **别把 `promptSections` 当成"动态注入"的通用入口。**
+> 核心用**逐字节比较**判断能否续用会话（`orchestrator.js`），你的返回值一旦变化，
+> 该会话就变成「每轮都是新会话」——模型每轮失忆，缓存全部不命中，
+> 而且**界面上看不出任何异常**。判断标准：
+> 「这段文字换个时间看，还成立吗？」成立才放这里。
 
 ---
 
@@ -465,12 +474,19 @@ export function dispose() { /* 卸载/热重载时最后清理 */ }
 - [ ] `enum` 带了 `values`；`internal` 带了 `description`
 - [ ] 密钥字段标了 `secret: true`，代码里**没有硬编码**密钥
 - [ ] 提示词片段 `priority ≤ 99`
+- [ ] **`promptSections(ctx)` 的返回值每轮逐字节相同**（无时间戳 / 随机数 / 轮次计数）—— 见 [caching-contract.md](./caching-contract.md) 铁律一
+- [ ] **没有在 `before-llm-messages` 里改写已有 system 消息**（`sys.content += ...`）—— 见铁律二
+- [ ] 注入的内容是 **push 新消息**，不是原地改写已有条目
+- [ ] `available()` 探测一次后**永远返回同一个值**（不会因后台探测翻转）—— 见铁律三
 
 **运行期**
 - [ ] 发消息一律用 `ctx.sender`，没有直接调 `onebot.send*`
 - [ ] `available()` 是同步的
 - [ ] `activate` 建的东西在 `deactivate` 里清掉了
 - [ ] 操作 QQ 的写接口有权限判断 + `try/catch`
+
+**上线前**
+- [ ] 调 `GET /api/skills/cache-impact` 确认自己的 `level` 是 `ok`（不是 `warn` / `danger`）
 
 ---
 
@@ -582,6 +598,7 @@ export function setup(api) {
 交给 AI 时的附加文档选择见文首的「📎」一节。
 
 - [plugin-development.md](./plugin-development.md) —— 确定性型插件开发（能力 / 钩子）
+- [caching-contract.md](./caching-contract.md) —— **缓存契约三条铁律**（提示词逐字节稳定 / 别改已有 system / `available()` 要稳）
 - [skill-reference.md](./skill-reference.md) —— 共同机制完整参考（清单、生命周期、能力系统、ctx 全量字段、硬约束清单）
 - [snowluma-capabilities.md](./snowluma-capabilities.md) —— 协议端 73 个接口的逐条参数表
 - [skill-system.md](./skill-system.md) —— 架构总览

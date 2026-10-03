@@ -96,7 +96,7 @@ proactive 运行在 user 消息末尾追加「（主动机会）群里已经安�
 唯一能改"已拼好 messages"的扩展点：
 
 - **conversation-memory-lite**：**不再使用本钩子**。精简版移除了每轮注入（那是击穿前缀缓存的元凶，且与会话延续功能重复），只保留后台索引 + 模型主动检索。
-- 反例：改写既有 system 消息（`sys.content += ...`）会击穿前缀缓存且**不**触发 fresh 逻辑，成本成倍 —— 见 `doc/skill-plugin-compat-2026-10-03.md` 的缓存影响体检。
+- 反例：改写既有 system 消息（`sys.content += ...`）会击穿前缀缓存且**不**触发 fresh 逻辑，成本成倍 —— **外部开发者必读**：[caching-contract.md](./caching-contract.md) 铁律二；体检接口见 `doc/skill-plugin-compat-2026-10-03.md` 的缓存影响体检。
 - **knowledge-memes**：知识库联想命中时 **push 一条新 system 消息**【脑内闪过】（push 式，安全）
 
 组装结果同时写入 `session.systemPrompt / userPrompt / inputMessages`（UI 与调试可见）。
