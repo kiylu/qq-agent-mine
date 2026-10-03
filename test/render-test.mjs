@@ -845,5 +845,52 @@ console.log('\n=== 应用内 alert 弹窗 ===');
     }
   }
 
+  // ── 会话卡片「本次调用消费」角标（2026-10-03）────────────────────────────
+  // 金额由后端 costOfSession 算出（cost + costMeta），前端只格式化 + 依据说明。
+  // 这里锁住：① 有 cost 才渲染；② 峰时加 peak 类；③ 提示语里能读出计价依据。
+  console.log('\n=== 会话卡片消费角标 ===');
+  {
+    const fn = sandbox.sessionCostBadge;
+    const okFn = typeof fn === 'function';
+    okFn ? pass++ : fail++;
+    console.log('  ' + (okFn ? 'OK   ' : 'FAIL ') + 'sessionCostBadge 已定义');
+
+    if (okFn) {
+      // ① 官方价 + 高峰档 → 带 sess-cost-peak，提示里写明"高峰"与"官方"
+      const peakHtml = fn({
+        cost: 1.2345, usage: { promptTokens: 1000, cachedTokens: 200, completionTokens: 100 },
+        costMeta: { source: 'official', matched: true, peak: true, hasPeakTiers: true }
+      });
+      const ok1 = /class="sess-cost sess-cost-peak"/.test(peakHtml)
+        && /高峰时段计价/.test(peakHtml) && /内置官方价格表/.test(peakHtml);
+      ok1 ? pass++ : fail++;
+      console.log('  ' + (ok1 ? 'OK   ' : 'FAIL ') + '高峰档：加 peak 类且提示写明高峰+官方表');
+
+      // ② 自定义价 + 非峰 → 不加 peak 类，提示写明"自定义"
+      const custHtml = fn({
+        cost: 0.5, usage: { promptTokens: 100, cachedTokens: 0, completionTokens: 10 },
+        costMeta: { source: 'custom', matched: true, peak: false, hasPeakTiers: false }
+      });
+      const ok2 = /class="sess-cost"/.test(custHtml) && !/sess-cost-peak/.test(custHtml)
+        && /你的自定义单价/.test(custHtml);
+      ok2 ? pass++ : fail++;
+      console.log('  ' + (ok2 ? 'OK   ' : 'FAIL ') + '自定义价：无 peak 类且提示写明自定义单价');
+
+      // ③ 闲时（有峰谷档但当前非峰）→ 提示"按闲时计价"
+      const offHtml = fn({
+        cost: 0.1, usage: { promptTokens: 100, cachedTokens: 0, completionTokens: 0 },
+        costMeta: { source: 'official', matched: true, peak: false, hasPeakTiers: true }
+      });
+      const ok3 = /按闲时计价/.test(offHtml);
+      ok3 ? pass++ : fail++;
+      console.log('  ' + (ok3 ? 'OK   ' : 'FAIL ') + '闲时档：提示写明按闲时计价');
+
+      // ④ 金额用 fmtYuan（<1 显示 4 位小数）
+      const ok4 = /0\.1235/.test(peakHtml) || /1\.23/.test(peakHtml);
+      ok4 ? pass++ : fail++;
+      console.log('  ' + (ok4 ? 'OK   ' : 'FAIL ') + '金额走 fmtYuan 格式化');
+    }
+  }
+
 console.log('\n' + (fail ? 'FAILED ' + fail + ' / passed ' + pass : 'ALL PASSED ' + pass));
 process.exit(fail ? 1 : 0);

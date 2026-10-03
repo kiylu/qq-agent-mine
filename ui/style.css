@@ -521,6 +521,19 @@ span.unread {
 }
 .sess-hit-line { color: var(--tx2); cursor: help; }
 
+/* 本次会话消费金额（会话卡片）：按后端 costOfSession 结果渲染。
+   高峰时段计价时用 warn 色调提示单价更贵；闲时/非分时保持中性。 */
+.sess-cost {
+  padding: 1px 6px; border-radius: var(--r-full);
+  font-size: 10.5px; font-weight: 650;
+  border: 1px solid var(--bd2);
+  color: var(--tx2); background: transparent;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+.sess-cost.sess-cost-peak { border-color: var(--warn-line); color: var(--warn); background: var(--warn-soft); }
+.sess-cost-line { color: var(--tx2); cursor: help; }
+
 .detail-header { margin-bottom: 14px; }
 .detail-header h2 { font-size: 16px; margin-bottom: 6px; }
 .detail-header .sub { color: var(--tx3); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }

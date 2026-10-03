@@ -338,6 +338,34 @@ function startListPoller() {
 
 startListPoller();
 
+/**
+ * 会话卡片上的「本次消费」角标。
+ *
+ * 金额由后端随会话摘要一起算好（`s.cost`，见 src/sessions.js · costOfSession），
+ * 前端只负责格式化与给出溯源提示 —— 不在这里重算一遍价格：
+ * 价格匹配逻辑（自定义价 > 官方表 > 兜底、渠道价、峰谷分时）只在后端有一份，
+ * 前端复刻迟早会漂移成"卡片显示一个价、用量页算另一个价"。
+ *
+ * 提示里会说明成本从哪来（自定义价 / 官方价 / 兜底价），以及是否踩在高峰档，
+ * 让用户看到非预期金额时知道该去哪里改。
+ */
+function sessionCostBadge(s) {
+  const meta = s.costMeta || {};
+  // source 取值同 resolveModelPrice：custom（模型自定义价）/ official（官方表）
+  // / manual（全局兜底价）/ unmatched（官方表开启但表里没有）/ none（没有任何单价）。
+  const srcTxt = meta.source === 'custom' ? '你的自定义单价'
+    : meta.source === 'official' ? '内置官方价格表'
+      : meta.source === 'manual' ? '全局兜底单价'
+        : meta.source === 'unmatched' ? '官方表未收录该模型'
+          : '未匹配到单价（按 0 计）';
+  const peakTxt = meta.peak ? '（按高峰时段计价）' : (meta.hasPeakTiers ? '（按闲时计价）' : '');
+  const title = `本次会话消费：${fmtYuan(s.cost)}&#10;计价依据：${srcTxt}${peakTxt}`
+    + `&#10;输入 ${fmtTokens(s.usage?.promptTokens)}（其中命中缓存 ${fmtTokens(s.usage?.cachedTokens)}）`
+    + ` · 输出 ${fmtTokens(s.usage?.completionTokens)}`;
+  const peakCls = meta.peak ? ' sess-cost-peak' : '';
+  return `<span class="sess-cost${peakCls}" title="${title}">${fmtYuan(s.cost)}</span>`;
+}
+
 function renderSessionList() {
   const box = $('#session-items');
   state.seenSessionIds = state.seenSessionIds || new Set();
@@ -365,6 +393,9 @@ function renderSessionList() {
     const hitHtml = hasUsage
       ? `<span class="sess-hit" title="本次会话缓存命中率：命中 ${s.usage?.cachedTokens || 0} / 输入 ${s.usage?.promptTokens || 0} tokens&#10;前缀缓存让重复的上下文按更低价计费，命中率越高越省">命中 ${(hit * 100).toFixed(0)}%</span>`
       : '';
+    // 本次调用消费（后端按当前价格表现算，见 src/sessions.js · costOfSession）。
+    // 与命中共用一个 gate：没调用过模型就不显示，避免误导性的 ¥0。
+    const costHtml = hasUsage && s.cost != null ? sessionCostBadge(s) : '';
     const isNew = !state.seenSessionIds.has(s.id);
     // 失败会话的重试按钮：只有 error 状态且没发出过消息的才显示
     // （已发言的重试会导致群里重复内容，后端同样会拒绝）
@@ -388,7 +419,7 @@ function renderSessionList() {
           ${activityHtml}
           ${retryHtml}
           ${abortHtml}
-          ${s.status !== 'waiting' ? `<span>${s.usage ? fmtTokens(s.usage.totalTokens) : '-'}</span><span>${s.rounds || 0} 轮</span>${searchHtml}${hitHtml}</span>` : ''}
+          ${s.status !== 'waiting' ? `<span>${s.usage ? fmtTokens(s.usage.totalTokens) : '-'}</span><span>${s.rounds || 0} 轮</span>${searchHtml}${hitHtml}${costHtml}</span>` : ''}
         </div>
       </div>`;
   }).join('');
@@ -522,7 +553,9 @@ function renderSessionDetail(s) {
   if (!detail) return;
   // 内容没变（轮询/SSE 重复推送）→ 完全不动 DOM，保住滚动位置和展开状态
   // json 模式切换也要触发重渲染
-  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}|${s.continuation?.mode || ''}|${s.continuation?.turns || ''}|${s.usage?.promptTokens || 0}|${s.usage?.cachedTokens || 0}`;
+  // 末位的 cost：成本由 token 推导，但**改单价**时 token 不变、金额会变，
+  // 不进指纹就会停在旧数字上（用户改完价格发现详情页没跟着变）。
+  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}|${s.continuation?.mode || ''}|${s.continuation?.turns || ''}|${s.usage?.promptTokens || 0}|${s.usage?.cachedTokens || 0}|${s.cost ?? ''}`;
   if (lastDetailFp === fp) return;
   const firstRender = lastDetailFp === null;
   lastDetailFp = fp;
@@ -561,6 +594,7 @@ function renderSessionDetail(s) {
         ${(Number(usage.promptTokens) || 0) > 0
           ? `<span class="sess-hit-line" title="输入 ${usage.promptTokens} tokens，其中 ${usage.cachedTokens || 0} 命中前缀缓存">缓存命中 ${(usageCacheHitRate(usage) * 100).toFixed(1)}%</span>`
           : ''}
+        ${s.cost != null ? `<span class="sess-cost-line">本次消费 ${sessionCostBadge(s)}</span>` : ''}
         <span>${s.rounds || 0} 轮工具</span>
         <span>联网搜索 ${Number(s.webSearchCount) || 0} 次</span>
       </div>

@@ -1164,7 +1164,8 @@ export function createRoutes(deps) {
       handler: async ({ res, json, match }) => {
         const s = sessions.get(match[1]);
         if (!s) return json(res, 404, { error: '会话不存在' });
-        return json(res, 200, s);
+        // 详情直读磁盘原始文件（无 cost）—— 补上成本字段，与列表入口口径一致
+        return json(res, 200, sessions.withCost(s));
       }
     },
     {

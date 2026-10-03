@@ -3,7 +3,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, getConfig } from './config.js';
+// 只从叶子模块 model-prices.js 取价格解析（它不 import 任何东西，无循环风险）。
+// 刻意不走 llm.js 的 estimateCost：那会经由 skills/manager.js 拖进一大串依赖，
+// 而会话索引在启动关键路径上，越轻越好。
+import { resolveModelPrice, priceAt, modelLabel } from './model-prices.js';
 
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 // 索引缓存：启动加速的关键。没有它时 #loadIndex 要逐个 readFileSync+JSON.parse
@@ -27,6 +31,46 @@ export function newSessionId() {
 
 export function sessionFile(id) {
   return path.join(SESSIONS_DIR, `${id}.json`);
+}
+
+/**
+ * 按配置单价折算一次会话的成本（元）。
+ *
+ * 口径与用量页的 `costOfRows()`（src/app.js）保持一致，便于两处对得上：
+ *   未命中缓存的输入按 in 价 + 命中部分按 cached 价 + 输出按 out 价；
+ *   支持峰谷分时的模型（如 DeepSeek）按 `at` 时刻取对应档位。
+ *
+ * 三种单价来源（`resolveModelPrice` 内部已按优先级排好）：
+ *   1. 该模型的自定义价（最高）
+ *   2. 官方价格表（`useOfficialPrice` 开时）
+ *   3. 全局兜底价
+ * 都匹配不到时单价为 0 → 成本记 0（不瞎估）。
+ *
+ * 返回 null 的情形：没有模型、或没有任何 token —— 让 UI 显示占位符而不是 ¥0，
+ * 否则「没调用过」和「调用了但免费」看起来一样。
+ */
+export function costOfSession({ usage, model, vendor, at } = {}) {
+  const prompt = Number(usage?.promptTokens) || 0;
+  const completion = Number(usage?.completionTokens) || 0;
+  if (!prompt && !completion) return null;
+  const cfg = getConfig();
+  // 渠道价优先：用户可为「渠道：模型」单独定价，与 app.js 的 priceOf 同口径
+  let p = vendor ? resolveModelPrice(modelLabel(vendor, model), cfg) : null;
+  if (!p || p.source !== 'custom') p = resolveModelPrice(String(model || ''), cfg);
+  const tier = p.peak && at ? priceAt({ in: p.in, out: p.out, cached: p.cached, peak: p.peak }, at) : p;
+  const cached = Math.min(Number(usage?.cachedTokens) || 0, prompt);
+  const fresh = Math.max(0, prompt - cached);
+  const cost = (fresh / 1_000_000) * tier.in
+    + (cached / 1_000_000) * tier.cached
+    + (completion / 1_000_000) * tier.out;
+  return {
+    cost,
+    source: p.source || 'none',
+    matched: Boolean(p.matched),
+    // 该模型是否分时段计价 —— UI 可据此加个「峰/谷」角标
+    hasPeakTiers: Boolean(p.peak),
+    peak: Boolean(p.peak && at && priceAt({ in: p.in, out: p.out, cached: p.cached, peak: p.peak }, at).peak)
+  };
 }
 
 export class SessionRegistry {
@@ -243,7 +287,32 @@ export class SessionRegistry {
   }
   #reconcileStarted = false;
 
+  /** 现算一条会话的成本信息（见模块级 costOfSession 的口径说明）。 */
+  #costOf(s) {
+    return costOfSession({
+      usage: s.usage,
+      model: s.model,
+      vendor: s.vendor,
+      at: s.endedAt || s.startedAt
+    });
+  }
+
+  /**
+   * 给「会话详情」补上成本字段。
+   *
+   * 详情走 `get(id)` 直读磁盘原始会话文件（没有 cost —— 成本不落盘，见 #summary
+   * 的注释），而列表走 #summary。若不补，详情页的「本次消费」永远不显示，
+   * 用户会以为"列表有、点进去就没了"是 bug。这里统一在这里补，两个入口口径一致。
+   */
+  withCost(s) {
+    if (!s || typeof s !== 'object') return s;
+    return { ...s, ...this.#costFields(s) };
+  }
+
   #summary(s) {
+    // 成本在生成摘要时现算：索引里只存 usage token，不落盘成本 ——
+    // 价格表会变（换模型/改单价/远程表刷新），落盘的成本会变成过期数字。
+    const costInfo = this.#costOf(s);
     return {
       id: s.id,
       chatKey: s.chatKey,
@@ -258,7 +327,26 @@ export class SessionRegistry {
       model: s.model ?? '',
       trigger: s.triggerSummary ?? '',
       promptChars: s.promptChars ?? 0,
-      rounds: s.rounds ?? 0
+      rounds: s.rounds ?? 0,
+      // 本次会话成本（元）。null = 没调用过模型（UI 显示占位符）
+      ...this.#costFields(s)
+    };
+  }
+
+  /** 成本字段（cost + costMeta）—— 列表摘要与详情补全都用这一份，避免两处漂移。 */
+  #costFields(s) {
+    const info = this.#costOf(s);
+    return {
+      cost: info ? info.cost : null,
+      costMeta: info
+        ? {
+          source: info.source,
+          matched: info.matched,
+          peak: info.peak,
+          // UI 用它区分「闲时计价」与「该模型压根不分时段」
+          hasPeakTiers: info.hasPeakTiers
+        }
+        : null
     };
   }
 
