@@ -1408,8 +1408,8 @@ export function createApp({ log = console.log } = {}) {
       try {
         const data = fs.readFileSync(fullPath);
         const ext = path.extname(fullPath);
-        // jpg/jpeg/webp/gif/ico：设置页群二维码彩蛋（group-qrcode.jpg）与
-        // 市场页图片要用 —— 曾经只认 png/svg，jpg 会以 octet-stream 下载而非显示
+        // jpg/jpeg/webp/gif/ico：市场页图片与落地页群二维码要用 ——
+        // 曾经只认 png/svg，jpg 会以 octet-stream 下载而非显示
         const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8' };
         const headers = { 'content-type': types[ext] ?? 'application/octet-stream', 'cache-control': 'no-cache' };
         if (ext === '.html') {

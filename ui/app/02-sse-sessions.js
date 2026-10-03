@@ -358,6 +358,13 @@ function renderSessionList() {
     const searchHtml = Number(s.webSearchCount) > 0
       ? `<span class="muted">搜 ${s.webSearchCount}</span>`
       : '';
+    // 本次会话的缓存命中率（单次口径，不是用量页那种全时段汇总）。
+    // 只在确实调用过模型（promptTokens > 0）时显示，避免空会话/等待中显示一个误导性的 0%。
+    const hit = usageCacheHitRate(s.usage);
+    const hasUsage = (Number(s.usage?.promptTokens) || 0) > 0;
+    const hitHtml = hasUsage
+      ? `<span class="sess-hit" title="本次会话缓存命中率：命中 ${s.usage?.cachedTokens || 0} / 输入 ${s.usage?.promptTokens || 0} tokens&#10;前缀缓存让重复的上下文按更低价计费，命中率越高越省">命中 ${(hit * 100).toFixed(0)}%</span>`
+      : '';
     const isNew = !state.seenSessionIds.has(s.id);
     // 失败会话的重试按钮：只有 error 状态且没发出过消息的才显示
     // （已发言的重试会导致群里重复内容，后端同样会拒绝）
@@ -381,7 +388,7 @@ function renderSessionList() {
           ${activityHtml}
           ${retryHtml}
           ${abortHtml}
-          ${s.status !== 'waiting' ? `<span>${s.usage ? fmtTokens(s.usage.totalTokens) : '-'}</span><span>${s.rounds || 0} 轮</span>${searchHtml}</span>` : ''}
+          ${s.status !== 'waiting' ? `<span>${s.usage ? fmtTokens(s.usage.totalTokens) : '-'}</span><span>${s.rounds || 0} 轮</span>${searchHtml}${hitHtml}</span>` : ''}
         </div>
       </div>`;
   }).join('');
@@ -515,7 +522,7 @@ function renderSessionDetail(s) {
   if (!detail) return;
   // 内容没变（轮询/SSE 重复推送）→ 完全不动 DOM，保住滚动位置和展开状态
   // json 模式切换也要触发重渲染
-  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}|${s.continuation?.mode || ''}|${s.continuation?.turns || ''}`;
+  const fp = `${s.id}|${s.status}|${s.rounds || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}|${s.continuation?.mode || ''}|${s.continuation?.turns || ''}|${s.usage?.promptTokens || 0}|${s.usage?.cachedTokens || 0}`;
   if (lastDetailFp === fp) return;
   const firstRender = lastDetailFp === null;
   lastDetailFp = fp;
@@ -551,6 +558,9 @@ function renderSessionDetail(s) {
         <span>开始 ${fmtClock(s.startedAt)}${s.endedAt ? ` · 结束 ${fmtClock(s.endedAt)}` : ' · 进行中'}</span>
         <span>模型 ${esc(s.model || '-')}</span>
         <span>${usage.calls || 0} 次调用 · ${fmtTokens(usage.promptTokens)} 入 / ${fmtTokens(usage.completionTokens)} 出 / ${fmtTokens(usage.totalTokens)} 总</span>
+        ${(Number(usage.promptTokens) || 0) > 0
+          ? `<span class="sess-hit-line" title="输入 ${usage.promptTokens} tokens，其中 ${usage.cachedTokens || 0} 命中前缀缓存">缓存命中 ${(usageCacheHitRate(usage) * 100).toFixed(1)}%</span>`
+          : ''}
         <span>${s.rounds || 0} 轮工具</span>
         <span>联网搜索 ${Number(s.webSearchCount) || 0} 次</span>
       </div>

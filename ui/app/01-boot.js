@@ -75,6 +75,17 @@ function fmtTokens(n) {
   return n >= 10000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
 }
 
+/**
+ * 单次会话的缓存命中率（0~1）。口径与后端 llm.js 的 cacheHitRate 完全一致：
+ * cachedTokens / promptTokens，无 prompt 数据时返回 0（而不是 NaN）。
+ * 用于会话卡片/详情展示"这一次"的命中率 —— 用量页看到的是全时段汇总值。
+ */
+function usageCacheHitRate(usage) {
+  const p = Number(usage?.promptTokens) || 0;
+  if (!p) return 0;
+  return Math.min(1, Math.max(0, (Number(usage?.cachedTokens) || 0) / p));
+}
+
 $('#pause-btn').addEventListener('click', async () => {
   if (state.paused) {
     await resumePause({ skipBacklog: false });

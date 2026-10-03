@@ -151,7 +151,7 @@ await c.check('landing.html 的本地资源引用全部存在（曾经引用过�
   // 站级资源只校验路径前缀；与页面同目录的相对文件（如群二维码）必须本地存在。
   for (const u of localRefs(landing)) {
     if (/^\/(assets|vendor)\//.test(u)) continue;   // 站级资源，服务器侧存在
-    // 群二维码图片：随 ui/ 一起分发（设置页彩蛋与 landing 都引用它）。
+    // 群二维码图片：随 ui/ 一起分发（landing.html 落地页引用）。
     if (u === 'group-qrcode.jpg') {
       const p = path.join(ROOT, 'ui', u);
       assert.ok(fs.existsSync(p), `landing.html 引用的群二维码不存在：${u}`);
@@ -331,6 +331,27 @@ await c.check('延续徽标样式与类名一致（.cont-badge + .cont-cont/.con
   assert.ok(css.includes('.cont-badge'), 'CSS 缺少 .cont-badge');
   assert.ok(css.includes('.cont-cont'), 'CSS 缺少 .cont-cont（续用态）');
   assert.ok(css.includes('.cont-fresh'), 'CSS 缺少 .cont-fresh（新开态）');
+});
+
+// ── 7. 单次会话缓存命中率展示 ────────────────────────────────────────────
+// 用量页只给全时段汇总，会话页要能单独看"这一次"的命中率。口径必须与
+// 后端 llm.js 的 cacheHitRate 一致（cachedTokens / promptTokens），否则前后对不上。
+c.section('7. 会话缓存命中率展示');
+await c.check('前端有单次命中率计算函数，且口径与后端一致', () => {
+  assert.ok(appJs.includes('function usageCacheHitRate'), '应导出 usageCacheHitRate 计算函数');
+  assert.ok(/cachedTokens[\s\S]{0,80}promptTokens/.test(appJs)
+    || /promptTokens[\s\S]{0,80}cachedTokens/.test(appJs),
+    'usageCacheHitRate 应基于 cachedTokens / promptTokens 计算');
+});
+await c.check('会话卡片与会话详情都展示命中率', () => {
+  assert.ok(appJs.includes('sess-hit'), '会话卡片缺少命中率徽标（sess-hit）');
+  assert.ok(appJs.includes('sess-hit-line'), '会话详情缺少命中率行（sess-hit-line）');
+  assert.ok(css.includes('.sess-hit'), 'CSS 缺少 .sess-hit 样式');
+});
+await c.check('空会话不显示命中率（避免误导性的 0%）', () => {
+  // 只有 promptTokens > 0（确实调用过模型）才渲染命中率
+  assert.ok(/promptTokens\)\s*\|\|\s*0\)\s*>\s*0/.test(appJs),
+    '命中率应仅在 promptTokens > 0 时展示');
 });
 
 c.finish();
