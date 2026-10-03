@@ -24,6 +24,10 @@ import { DATA_DIR } from './config.js';
 import { detectDialect } from './thinking.js';
 
 const CONV_DIR = path.join(DATA_DIR, 'conversations');
+// 关闭的会话归档到这里（②P3：buffer 归档回溯）。供 UI/排障回看"上一个会话长什么样"。
+const ARCHIVE_DIR = path.join(CONV_DIR, 'archive');
+// 每个会话最多保留几份归档（按时间倒序，超出的删掉）。
+const ARCHIVE_KEEP = 10;
 // 陈旧缓冲的兜底清理：超过这个时长没有任何交互就直接丢弃（防文件无限堆积）。
 // 注意这与"沉默阈值"是两回事 —— 沉默阈值决定"下次触发时是否续用"，这里只是
 // 把永远不会再被用到的文件删掉。
@@ -167,17 +171,84 @@ export class ConversationStore {
     return buf;
   }
 
-  /** 丢弃某会话的缓冲（手动「重开会话」/ 沉默关闭 / 任一前提不满足时调用）。 */
-  clear(chatKey) {
+  /**
+   * 丢弃某会话的缓冲（手动「重开会话」/ 沉默关闭 / 任一前提不满足时调用）。
+   * @param {string} chatKey
+   * @param {object} [opts]
+   * @param {boolean} [opts.archive=true] 先归档一份再删（②P3，供回溯）
+   * @param {string}  [opts.reason='']    归档时记下的关闭原因
+   */
+  clear(chatKey, { archive = true, reason = '' } = {}) {
     const key = String(chatKey ?? '');
     if (!key) return false;
-    const had = this.cache.delete(key);
+    const buf = this.cache.get(key) || this.#load(key);
+    if (archive && buf) this.#archive(buf, reason);
+    this.cache.delete(key);
     try {
       fs.rmSync(fileOf(key), { force: true });
       return true;
     } catch {
-      return had;
+      return !!buf;
     }
+  }
+
+  /** 把一份缓冲写进归档目录，并裁剪到 ARCHIVE_KEEP 份。 */
+  #archive(buf, reason = '') {
+    try {
+      fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+      const stamp = new Date(Number(buf.lastTurnAt) || Date.now())
+        .toISOString().replace(/[:.]/g, '-');
+      // 同毫秒内多次关闭会撞名 → 加一个自增序号，保证"每份归档一个文件"
+      const seq = (this.archiveSeq = (this.archiveSeq || 0) + 1);
+      const name = `${safeName(buf.chatKey)}.${stamp}.${seq}.json`;
+      const payload = { ...buf, closedReason: String(reason || ''), closedAt: Date.now() };
+      const tmp = path.join(ARCHIVE_DIR, `${name}.${process.pid}.tmp`);
+      fs.writeFileSync(tmp, JSON.stringify(payload), 'utf8');
+      fs.renameSync(tmp, path.join(ARCHIVE_DIR, name));
+      this.#trimArchives(buf.chatKey);
+    } catch (error) {
+      console.warn('[conversation] 归档会话缓冲失败:', error?.message ?? error);
+    }
+  }
+
+  /** 每个会话只留最近 ARCHIVE_KEEP 份归档。 */
+  #trimArchives(chatKey) {
+    try {
+      const prefix = `${safeName(chatKey)}.`;
+      const mine = fs.readdirSync(ARCHIVE_DIR)
+        .filter((f) => f.startsWith(prefix) && f.endsWith('.json'))
+        .sort();   // 文件名里的 ISO 时间戳 → 字典序即时间序
+      for (const f of mine.slice(0, Math.max(0, mine.length - ARCHIVE_KEEP))) {
+        try { fs.rmSync(path.join(ARCHIVE_DIR, f), { force: true }); } catch { /* ignore */ }
+      }
+    } catch { /* 目录不存在 */ }
+  }
+
+  /** 列出某会话（或全部）的归档摘要，新的在前。 */
+  listArchives(chatKey = '', { limit = 50 } = {}) {
+    const out = [];
+    try {
+      const prefix = chatKey ? `${safeName(chatKey)}.` : '';
+      for (const f of fs.readdirSync(ARCHIVE_DIR)) {
+        if (!f.endsWith('.json') || !f.startsWith(prefix)) continue;
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(ARCHIVE_DIR, f), 'utf8'));
+          out.push({
+            file: f,
+            chatKey: raw.chatKey,
+            turns: Number(raw.turns) || 0,
+            chars: Number(raw.chars) || 0,
+            messages: Array.isArray(raw.messages) ? raw.messages.length : 0,
+            startedAt: Number(raw.startedAt) || 0,
+            lastTurnAt: Number(raw.lastTurnAt) || 0,
+            closedAt: Number(raw.closedAt) || 0,
+            closedReason: String(raw.closedReason || '')
+          });
+        } catch { /* 单份读坏跳过 */ }
+      }
+    } catch { /* 目录不存在 */ }
+    out.sort((a, b) => (b.closedAt || b.lastTurnAt) - (a.closedAt || a.lastTurnAt));
+    return out.slice(0, limit);
   }
 
   /** 列出全部活跃缓冲（供 UI / 排障）。只读缓存 + 磁盘，不建索引。 */
@@ -239,6 +310,53 @@ export function sameToolNames(a, b) {
   if (x.length !== y.length) return false;
   for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
   return true;
+}
+
+// ── 媒体瘦身（②P3）──────────────────────────────────────────────────
+// 延续轮会把上一轮的 messages 原样重发。若历史里带着 base64 图片/视频，这些字节
+// 每轮都要重传：既按 token 计费（图片往往是大头），又让前缀缓存收益被吃光
+// （同一张图在不同的轮次里会被重新计费）。
+//
+// 做法：把历史条目里的 image_url / video_url **换成一行文字占位**（保留伴随的
+// 说明文字），模型仍知道"这里看过一张图"，只是不再重复"看"它。
+//
+// ⚠️ 只瘦身**历史**（作为前缀复用的旧 messages）。本轮新产生的图片不能动 ——
+//    模型正是要看它；本轮图片会在它变成"历史"后的下一轮被自动瘦身。
+
+const MEDIA_PLACEHOLDER = '[此前看过的一张图片/视频（已省略，避免重复计费）]';
+
+/**
+ * 返回一份"媒体已瘦身"的消息序列副本（不改原数组）。
+ * 只有 parts 形态的 content（数组）才可能带媒体；字符串 content 原样保留。
+ */
+export function slimHistoricalMedia(messages) {
+  let changed = false;
+  const out = [];
+  for (const m of messages || []) {
+    const c = m?.content;
+    if (!Array.isArray(c)) { out.push(m); continue; }
+    let hit = false;
+    const parts = [];
+    for (const p of c) {
+      if (p && (p.type === 'image_url' || p.type === 'video_url')) {
+        hit = true;
+        // 折叠连续媒体：只在没有紧邻占位时插一条，避免"3 张图"变成 3 行占位
+        if (parts[parts.length - 1]?.text !== MEDIA_PLACEHOLDER) {
+          parts.push({ type: 'text', text: MEDIA_PLACEHOLDER });
+        }
+      } else {
+        parts.push(p);
+      }
+    }
+    if (!hit) { out.push(m); continue; }
+    changed = true;
+    // 瘦身后只剩纯文本 → 退回字符串形态（更省字节，也更好比对前缀）
+    const onlyText = parts.every((p) => p?.type === 'text');
+    out.push(onlyText
+      ? { ...m, content: parts.map((p) => p.text).join('\n') }
+      : { ...m, content: parts });
+  }
+  return changed ? out : (messages || []);
 }
 
 // ── 会话关闭时的蒸馏（②P2）────────────────────────────────────────────

@@ -291,3 +291,72 @@ distillMaxChars: 12000       // 蒸馏输入的字符预算
 - buffer 归档回溯（最近 N 个）。
 - UI：会话页显示"延续中（N 轮）"标记 + 「重开会话」按钮已有雏形，可再打磨。
 
+---
+
+# 实施记录：问题② P3（媒体瘦身 / 归档回溯 / UI）
+
+状态：**已实施并通过回归**
+
+## 改了什么
+
+### `src/conversation.js` —— 媒体瘦身 + 归档
+
+- 新增 `slimHistoricalMedia(messages)`（导出，纯函数）：
+  把消息 parts 里的 `image_url` / `video_url` 换成一行文字占位
+  `[此前看过的一张图片/视频（已省略，避免重复计费）]`，保留伴随的说明文字；
+  **连续多张图折叠成一条占位**；瘦身后只剩文本时退回字符串形态（更省字节、更好比对前缀）。
+  - 不修改原数组（返回新数组；无媒体时原样返回同一引用）。
+- 归档：新增 `ARCHIVE_DIR`（`data/conversations/archive/`）+ `ARCHIVE_KEEP=10`。
+  - `clear(chatKey, { archive=true, reason })`：删前先归档一份，再删原文件。
+  - `#archive()`：文件名 `"<chatKey>.<ISO时间>.<自增序号>.json"`（同毫秒不撞名），
+    写入 `closedReason` / `closedAt`；顺带裁剪到每会话最近 10 份。
+  - `listArchives(chatKey?, { limit })`：列归档摘要，新的在前。
+  - `clear(..., { archive:false })` 用于陈旧清理（`sweep` 的兜底删除仍走直接删，不归档）。
+
+### `src/orchestrator.js` —— 接上瘦身与归档
+
+- 延续轮构造 `messages` 时，历史前缀先过 `slimHistoricalMedia()`（本轮新图不动）。
+- 写回缓冲前同样过一遍（让缓冲体积收敛，`maxChars` 上限才准；下一轮前缀与存量字节一致，避免抖动）。
+- `resetContinuation` / `#distillAndClose` 调 `clear(..., { archive:true, reason })`。
+- 新增 `listArchives(chatKey)` 对外方法。
+
+### `src/config.js`
+
+`store.continuation.slimMedia = true`（可关）。
+
+### `src/routes.js` + `ui/app/04-archive-usage.js`
+
+- 新增 `GET /api/chats/<kind>_<id>/continuation-archive`：列出该会话归档。
+- 会话详情标题右侧新增"· 已归档 N 段会话"标记（与已有"· 会话延续中：N 轮"并列）。
+  - **P3-3 备注**：会话页"延续中：N 轮"标记 + 「重开会话」按钮（含二次确认弹窗）
+    在 P1 阶段已实现，本次仅补归档计数展示。
+
+## ⚠️ 一个必须知道的取舍
+
+媒体瘦身会**改变历史前缀的字节**：切换那一刻，该会话的缓存前缀失效一次。
+之后前缀稳定在"占位版"，缓存重新命中。所以它只在"会话里出现过图片/视频、
+且还会续多轮"时才划算 —— 否则为省一次图片重复计费而丢一次缓存，得不偿失。
+因此给了 `slimMedia` 开关；默认开（base64 图片体量大，多数场景划算）。
+
+## 新增/更新测试
+
+- `test/conversation-buffer-test.mjs`（12 → 20 项）：新增 5 项 `slimHistoricalMedia`
+  （占位/折叠/纯文本原样/视频/纯函数不改原数组）+ 3 项归档（clear 归档、archive:false、
+  每会话 ≤10 份）。
+- `test/continuation-e2e-test.mjs`（7 → 9 项）：新增"关闭会话被归档 + 归档接口可查"、
+  "手动重开会话也会归档"。
+
+## 验证结果
+
+| 套件 | 结果 |
+|---|---|
+| `conversation-buffer-test.mjs` | ✅ 20/20 |
+| `continuation-e2e-test.mjs` | ✅ 9/9 |
+| `self-note-test.mjs` | ✅ 17/17 |
+| `npm test`（全量） | ✅ 全绿（exit 0） |
+
+## 下一步
+
+② 全部完成（P1/P2/P3）。剩余可选项：附录里的**问题③（三档连贯性偏置）**方案，**未启用**。
+
+

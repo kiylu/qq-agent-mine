@@ -302,7 +302,12 @@ export const DEFAULT_CONFIG = {
       // 下次全新会话在【自身状态】段注入。关闭时不做就永久丢失。
       distillOnClose: true,
       // 蒸馏输入（buffer 里 assistant 文本）的字符预算 —— 防止一次蒸馏塞爆小模型。
-      distillMaxChars: 12000
+      distillMaxChars: 12000,
+      // 媒体瘦身（②P3）：延续轮复用历史前缀时，把 base64 图片/视频换成文字占位。
+      // 图片（尤其 base64）每轮重传是实打实的 token 大头，换占位后体积收敛、
+      // 前缀也从此稳定。代价：切换那一刻前缀字节变了，当轮缓存会失效一次 ——
+      // 只有在"会话里出现过图片且还会续多轮"时才划算，故可关。
+      slimMedia: true
     },
     // ── 响应档位的作用范围 ──
     unifiedTier: true,          // true = 上方滑条对所有会话生效；false = 可按群单独设置

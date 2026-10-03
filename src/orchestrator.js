@@ -19,7 +19,7 @@ import { currentProviders } from './providers.js';
 import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
 import { rescueUnsentReply } from './reply-rescue.js';
-import { ConversationStore, resolveSilenceMs, sameToolNames, distillBuffer } from './conversation.js';
+import { ConversationStore, resolveSilenceMs, sameToolNames, distillBuffer, slimHistoricalMedia } from './conversation.js';
 
 export class Orchestrator {
   constructor({ store, memory, stickers, sender, sessions, onebot, emit = null, reminders = null, videoReader = null }) {
@@ -936,9 +936,12 @@ export class Orchestrator {
         activeTopic,
         runSeq: seq
       });
+      // ②P3 媒体瘦身：历史前缀里的 base64 图片/视频换成文字占位 —— 否则每轮重传，
+      // 图片 token（往往是大头）按缓存价也照样计费、请求体也白胖。本轮新图不动。
+      const hist = contCfg.slimMedia === false ? prevBuf.messages : slimHistoricalMedia(prevBuf.messages);
       messages = [
         { role: 'system', content: prevBuf.systemPrompt },
-        ...prevBuf.messages,
+        ...hist,
         { role: 'user', content: deltaPrompt }
       ];
       session.userPrompt = deltaPrompt;
@@ -1339,16 +1342,20 @@ export class Orchestrator {
       // 给 UI 的简化消息流（跳过纯 tool 结果的重复展示）
     }
 
-    // ── 会话缓冲写回（②P1）──
+    // ── 会话缓冲写回（②P1，②P3 瘦身）──
     // 存"去掉 system 的消息序列"（system 单独存，下一轮逐字节比对）。历史条目里
     // 已经剥掉 raw（见上），否则每轮字节都变，前缀缓存白给。
+    // ②P3：写盘前把媒体也换成占位 —— 让缓冲体积收敛（maxChars 上限才准），
+    // 下一轮续用时前缀与这里存的字节一致（避免"每次发的时候现瘦身"造成的抖动）。
+    // session.messages（UI）存的是计数而非 base64，不受影响。
     // 出错/中止的会话不写：半截状态续下去只会更乱，下次直接从存档重建更安全。
     if (contEnabled && !session.error) {
       try {
+        const toSave = messages.slice(1);
         this.conversation.save(chatKey, {
           systemPrompt,
           toolNames: toolIds,
-          messages: messages.slice(1),
+          messages: contCfg.slimMedia === false ? toSave : slimHistoricalMedia(toSave),
           turns: Number(session.continuation?.turns) || 1
         });
       } catch (error) {
@@ -1406,8 +1413,13 @@ export class Orchestrator {
     const key = String(chatKey ?? '');
     if (!key) return false;
     const had = Boolean(this.conversation.get(key));
-    this.conversation.clear(key);
+    this.conversation.clear(key, { archive: true, reason: '手动重开会话' });
     return had;
+  }
+
+  /** 列出某会话（或全部）的归档会话摘要（②P3，供 UI 回溯）。 */
+  listArchives(chatKey = '') {
+    return this.conversation.listArchives(chatKey);
   }
 
   /**
@@ -1420,7 +1432,7 @@ export class Orchestrator {
    * 用 running 集合防止同一会话并发蒸馏（多次触发撞在一起时只跑一次）。
    */
   #distillAndClose(chatKey, buffer, reason) {
-    this.conversation.clear(chatKey);
+    this.conversation.clear(chatKey, { archive: true, reason });
     const cfg = getConfig();
     const contCfg = cfg.store?.continuation || {};
     if (contCfg.distillOnClose === false) return;

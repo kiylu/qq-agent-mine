@@ -13,7 +13,7 @@ import path from 'node:path';
 const __testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-agent-conv-'));
 process.env.QQ_AGENT_DATA_DIR = __testDataDir;
 
-const { ConversationStore, resolveSilenceMs, sameToolNames } = await import('../src/conversation.js');
+const { ConversationStore, resolveSilenceMs, sameToolNames, slimHistoricalMedia } = await import('../src/conversation.js');
 const { buildContinuationPrompt } = await import('../src/prompt.js');
 const { ChatStore } = await import('../src/store.js');
 const { MemoryStore } = await import('../src/memory.js');
@@ -150,6 +150,88 @@ check('sameToolNames：顺序无关，集合必须一致', () => {
     assert.ok(!delta.includes('【可用表情包】'), '不得带表情包目录');
   });
 }
+
+// ═══ 5. 媒体瘦身（②P3）═══
+check('slimHistoricalMedia：image_url 换成文字占位，保留说明文字', () => {
+  const msgs = [
+    { role: 'user', content: [
+      { type: 'text', text: '这是图' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }
+    ] }
+  ];
+  const out = slimHistoricalMedia(msgs);
+  assert.notEqual(out, msgs, '应返回新数组（有改动）');
+  assert.equal(typeof out[0].content, 'string', '只剩文本时应退回字符串形态');
+  assert.ok(out[0].content.includes('这是图'), '应保留说明文字');
+  assert.ok(!out[0].content.includes('base64'), 'base64 应被移除');
+  assert.ok(out[0].content.includes('已省略'), '应出现占位');
+});
+
+check('slimHistoricalMedia：连续多张图折叠成一条占位', () => {
+  const msgs = [{ role: 'user', content: [
+    { type: 'text', text: '三张图' },
+    { type: 'image_url', image_url: { url: 'data:1' } },
+    { type: 'image_url', image_url: { url: 'data:2' } },
+    { type: 'image_url', image_url: { url: 'data:3' } }
+  ] }];
+  const out = slimHistoricalMedia(msgs);
+  const occ = (out[0].content.match(/已省略/g) || []).length;
+  assert.equal(occ, 1, '连续图片只应留一条占位');
+});
+
+check('slimHistoricalMedia：无媒体的消息序列原样返回（同一引用）', () => {
+  const msgs = [{ role: 'user', content: '纯文本' }, { role: 'assistant', content: '好的' }];
+  assert.equal(slimHistoricalMedia(msgs), msgs, '没有媒体时不应改动');
+});
+
+check('slimHistoricalMedia：video_url 同样被瘦身', () => {
+  const msgs = [{ role: 'user', content: [
+    { type: 'text', text: '看视频' },
+    { type: 'video_url', video_url: { url: 'data:video/mp4;base64,BBBB' } }
+  ] }];
+  const out = slimHistoricalMedia(msgs);
+  assert.ok(!JSON.stringify(out).includes('BBBB'), '视频 base64 应被移除');
+});
+
+check('slimHistoricalMedia：不改动原数组（纯函数）', () => {
+  const msgs = [{ role: 'user', content: [
+    { type: 'image_url', image_url: { url: 'data:X' } }
+  ] }];
+  const snapshot = JSON.stringify(msgs);
+  slimHistoricalMedia(msgs);
+  assert.equal(JSON.stringify(msgs), snapshot, '原数组不得被修改');
+});
+
+// ═══ 6. 归档（②P3）═══
+check('clear(archive) 会把缓冲归档；listArchives 能列出', () => {
+  const s = new ConversationStore();
+  s.save('group:300', { systemPrompt: 'S', toolNames: ['a'], messages: [{ role: 'user', content: '历史一句' }], turns: 5 });
+  s.clear('group:300', { archive: true, reason: '测试关闭' });
+  assert.equal(s.get('group:300'), null, '缓冲应被清掉');
+  const arcs = s.listArchives('group:300');
+  assert.equal(arcs.length, 1, '应有 1 份归档');
+  assert.equal(arcs[0].turns, 5);
+  assert.equal(arcs[0].closedReason, '测试关闭');
+});
+
+check('clear(archive:false) 不归档（如陈旧清理）', () => {
+  const s = new ConversationStore();
+  s.save('group:301', { systemPrompt: 'S', toolNames: [], messages: [{ role: 'user', content: 'x' }], turns: 1 });
+  const before = s.listArchives('group:301').length;
+  s.clear('group:301', { archive: false });
+  assert.equal(s.listArchives('group:301').length, before, '不应新增归档');
+});
+
+check('归档每会话只保留最近 10 份', () => {
+  const s = new ConversationStore();
+  for (let i = 0; i < 14; i++) {
+    s.save('group:302', { systemPrompt: 'S', toolNames: [], messages: [{ role: 'user', content: `第${i}轮` }], turns: i });
+    // 让归档文件名的时间戳递增（连续 save 的 lastTurnAt 可能同毫秒）
+    s.clear('group:302', { archive: true, reason: `第${i}次` });
+  }
+  const arcs = s.listArchives('group:302');
+  assert.ok(arcs.length <= 10, `归档应裁剪到 ≤10，实际 ${arcs.length}`);
+});
 
 try { fs.rmSync(__testDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 

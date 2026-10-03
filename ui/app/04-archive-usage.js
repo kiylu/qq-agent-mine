@@ -109,7 +109,7 @@ function renderChatMessages() {
   detail.innerHTML = `
     <div class="detail-header">
       <h2>${esc(name)} ${meta.unread ? `<span class="unread-pill">${meta.unread} 未读</span>` : ''}</h2>
-      <div class="sub"><span data-field="chat-msg-count"></span><span data-field="chat-continuation"></span></div>
+      <div class="sub"><span data-field="chat-msg-count"></span><span data-field="chat-continuation"></span><span data-field="chat-archive-count"></span></div>
     </div>
     <div class="chat-toolbar">
       <button class="btn btn-small" id="chat-newconv-btn" title="丢弃机器人对这段对话的上下文（LLM 侧历史），下一句从全新会话开始；不影响消息存档与群友印象">重开会话</button>
@@ -136,6 +136,15 @@ function renderChatMessages() {
       if (state.currentChatKey !== key) return;
       const el = detail.querySelector('[data-field="chat-continuation"]');
       if (el) el.textContent = d.continuation ? `· 会话延续中：${d.continuation.turns} 轮` : '';
+    })
+    .catch(() => { /* ignore */ });
+  // 历史归档（②P3）：显示这个会话关闭过几段，便于回溯"上个会话聊到哪"
+  api(`/api/chats/${key.replace(':', '_')}/continuation-archive`)
+    .then((d) => {
+      if (state.currentChatKey !== key) return;
+      const n = Array.isArray(d.archives) ? d.archives.length : 0;
+      const el = detail.querySelector('[data-field="chat-archive-count"]');
+      if (el) el.textContent = n ? `· 已归档 ${n} 段会话` : '';
     })
     .catch(() => { /* ignore */ });
   // 重开会话（二次确认）：丢弃 LLM 侧的对话历史 —— 机器人"忘掉自己想过什么"，

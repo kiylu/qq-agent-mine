@@ -137,6 +137,24 @@ await check('沉默关闭会话时触发蒸馏：自身状态写入记忆', asyn
   assert.ok(distilledReqs.length >= 1, '关闭会话时应发出一次蒸馏请求');
 });
 
+// ═══ 场景 7：媒体瘦身 + 归档（②P3）═══
+await check('关闭的会话被归档，归档接口能查到（②P3）', async () => {
+  // 上一个用例的沉默关闭已把 group:456 的缓冲归档
+  const r = await request('GET', '/api/chats/group_456/continuation-archive');
+  assert.equal(r.status, 200);
+  const arcs = r.data.archives || [];
+  assert.ok(arcs.length >= 1, `应至少有 1 份归档：${JSON.stringify(arcs)}`);
+});
+
+await check('手动重开会话也会归档当前缓冲', async () => {
+  await fire('@覆盖Bot 建立缓冲准备重开', 70020);
+  const before = (await request('GET', '/api/chats/group_456/continuation-archive')).data.archives.length;
+  const r = await request('POST', '/api/chats/group_456/new-conversation', { body: {} });
+  assert.equal(r.data.had, true);
+  const after = (await request('GET', '/api/chats/group_456/continuation-archive')).data.archives.length;
+  assert.equal(after, before + 1, '重开会话应新增一份归档');
+});
+
 await teardown();
 
 console.log(`\n会话延续端到端：通过 ${pass.length}，失败 ${fail.length}`);

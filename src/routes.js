@@ -1464,6 +1464,14 @@ export function createRoutes(deps) {
       }
     },
     {
+      // 某会话已关闭的历史会话归档（②P3，供 UI 回溯"上个会话长什么样"）
+      method: 'GET', pattern: /^\/api\/chats\/(group|private)_(\d+)\/continuation-archive$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        return json(res, 200, { archives: orchestrator.listArchives(chatKey) });
+      }
+    },
+    {
       // 手动「重开会话」：丢弃该会话 LLM 侧的对话历史（机器人自己的思考链），
       // 下次触发走全新会话。**不动消息存档、不动记忆** —— 群里聊过的内容下次
       // 仍会作为【已读信息】带过去，只是不再续用旧的 messages 前缀。
