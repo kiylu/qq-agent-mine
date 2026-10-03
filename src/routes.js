@@ -1244,7 +1244,11 @@ export function createRoutes(deps) {
       method: 'GET', pattern: /^\/api\/memory-files\/(group|private)_(\d+)$/,
       handler: async ({ res, json, match }) => {
         const chatKey = `${match[1]}:${match[2]}`;
-        return json(res, 200, { ...memory.query(chatKey), members: memory.members(chatKey) });
+        return json(res, 200, {
+          ...memory.query(chatKey),
+          members: memory.members(chatKey),
+          selfNotes: typeof memory.selfNotes === 'function' ? memory.selfNotes(chatKey) : []
+        });
       }
     },
     {

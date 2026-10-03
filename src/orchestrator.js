@@ -19,7 +19,7 @@ import { currentProviders } from './providers.js';
 import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
 import { rescueUnsentReply } from './reply-rescue.js';
-import { ConversationStore, resolveSilenceMs, sameToolNames } from './conversation.js';
+import { ConversationStore, resolveSilenceMs, sameToolNames, distillBuffer } from './conversation.js';
 
 export class Orchestrator {
   constructor({ store, memory, stickers, sender, sessions, onebot, emit = null, reminders = null, videoReader = null }) {
@@ -47,6 +47,7 @@ export class Orchestrator {
     this.pendingSessions = new Map();  // chatKey -> waiting sessionId（防抖期可见的“等待中”会话）
     this.verifiedWakes = new Set();    // 本轮 wake 由 onIncoming 触发判定排定的 chatKey（区别于 drain 等机械重排）
     this.consolidating = new Set();    // 正在整理记忆的 chatKey
+    this.distilling = new Set();       // 正在蒸馏自身状态的 chatKey（②P2，防并发重复蒸馏）
     this.runningChats = new Set();     // 正在运行的 chatKey
     this.activeRuns = new Map();       // chatKey -> sessionId
     this.sessionAbortMarks = new Set(); // 用户请求中止的 sessionId（abortSession 打标记，#runAgent 每轮检查）
@@ -953,8 +954,12 @@ export class Orchestrator {
       // 下次 fresh 老老实实从本轮窗口重新锚定。
       this.promptAnchors.delete(chatKey);
     } else {
-      // 关闭旧缓冲：下次从零开始（②P2 会在这里蒸馏私有状态）
-      if (prevBuf) this.conversation.clear(chatKey);
+      // 关闭旧缓冲：下次从零开始。
+      // ②P2：关闭前把思考链蒸馏成"自身状态"（fire-and-forget，不阻塞本轮）。
+      // 关闭是唯一握有完整 CoT 的时刻 —— 不蒸馏，海龟汤的谜底就永久丢了。
+      if (prevBuf) {
+        this.#distillAndClose(chatKey, prevBuf, freshReason);
+      }
       messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: proactive
@@ -1403,6 +1408,44 @@ export class Orchestrator {
     const had = Boolean(this.conversation.get(key));
     this.conversation.clear(key);
     return had;
+  }
+
+  /**
+   * 关闭缓冲 + 蒸馏自身状态（②P2）。
+   *
+   * 异步执行、不阻塞当前会话：蒸馏结果写进 `_self.json`，会在**下一次**构建
+   * 提示词时被【自身状态】段读到。这样即使本次 fresh 的 userPrompt 已经算好，
+   * 状态也不会丢 —— 它本来就是为了"下一次重开"准备的。
+   *
+   * 用 running 集合防止同一会话并发蒸馏（多次触发撞在一起时只跑一次）。
+   */
+  #distillAndClose(chatKey, buffer, reason) {
+    this.conversation.clear(chatKey);
+    const cfg = getConfig();
+    const contCfg = cfg.store?.continuation || {};
+    if (contCfg.distillOnClose === false) return;
+    if (this.distilling.has(chatKey)) return;
+    const messages = Array.isArray(buffer?.messages) ? buffer.messages : [];
+    if (!messages.length) return;
+    this.distilling.add(chatKey);
+    const maxChars = Math.max(1000, Number(contCfg.distillMaxChars) || 12000);
+    distillBuffer({
+      memory: this.memory,
+      chatKey,
+      messages,
+      maxChars,
+      callModel: (args) => chatCompletionWithRetry(args, 1)
+    }).then((written) => {
+      if (written?.length) {
+        console.log(`[orchestrator] 会话关闭蒸馏（${reason || '关闭'}）：写入自身状态 ${written.length} 条 @ ${chatKey}`);
+        this.emit('self-distilled', { chatKey, count: written.length, items: written });
+      }
+    }).catch((error) => {
+      // 蒸馏失败不影响任何主流程：最多是这次没归档
+      console.warn('[orchestrator] 会话关闭蒸馏失败:', error?.message ?? error);
+    }).finally(() => {
+      this.distilling.delete(chatKey);
+    });
   }
 
   /**

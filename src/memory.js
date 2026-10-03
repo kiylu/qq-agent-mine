@@ -26,6 +26,13 @@ function metaFile(chatKey) {
   return path.join(chatDir(chatKey), '_meta.json');
 }
 
+// 自身记忆（2026-10-03 ②P2）：机器人自己跨会话要记住的私有状态
+// （未完成的目标、自己定下的规则、暗牌答案、待办）。与群友印象分开存，
+// 不参与成员合并/整理，每会话一个小文件。
+function selfFile(chatKey) {
+  return path.join(chatDir(chatKey), '_self.json');
+}
+
 function memberFileName(userId, name = '') {
   if (String(userId ?? '').trim()) {
     const id = String(userId).trim();
@@ -55,6 +62,15 @@ function writeJson(file, value) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 1), 'utf8');
   fs.renameSync(tmp, file);
+}
+
+/** 读自身记忆（数组：{ content, createdAt }）。损坏/不存在 → []。 */
+function loadSelf(chatKey) {
+  const raw = readJson(selfFile(chatKey), null);
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e) => e && typeof e.content === 'string' && e.content.trim())
+    .map((e) => ({ content: String(e.content).slice(0, 400), createdAt: Number(e.createdAt) || 0 }));
 }
 
 function loadMember(chatKey, userId, name = '') {
@@ -139,7 +155,7 @@ export class MemoryStore {
       const map = new Map();
       try {
         for (const f of fs.readdirSync(chatDir(chatKey))) {
-          if (!f.endsWith('.json') || f === '_meta.json') continue;
+          if (!f.endsWith('.json') || f === '_meta.json' || f === '_self.json') continue;
           const raw = readJson(path.join(chatDir(chatKey), f), null);
           if (!raw) continue;
           const key = raw.userId ? String(raw.userId) : `_n_${f}`;
@@ -466,6 +482,56 @@ export class MemoryStore {
       const who = notes[String(m.userId)] || m.name || String(m.userId || '') || '某人';
       for (const e of m.impressions.slice(-3)) lines.push(`- ${who}：${e.content}`);
     }
+    return lines.join('\n');
+  }
+
+  // ── 自身记忆（selfNote，2026-10-03 ②P2）──────────────────────────────
+  // 与群友印象分开：这是"机器人自己的状态"，不按成员归属，也不参与整理合并。
+  // 出口有两个：① 模型主动调 remember_self 工具；② 会话关闭时由蒸馏自动写入。
+
+  /**
+   * 追加一条自身记忆。同样内容（去重后）不重复写。
+   * @returns {{content:string, createdAt:number}|null}
+   */
+  appendSelf(chatKey, content, { max = 40 } = {}) {
+    const text = String(content ?? '').trim().slice(0, 400);
+    if (!text) return null;
+    const list = loadSelf(chatKey);
+    if (list.some((e) => e.content === text)) return list.find((e) => e.content === text);
+    const entry = { content: text, createdAt: Date.now() };
+    list.push(entry);
+    // 只留最近 max 条：自身状态是"当前有效"的短清单，不是日志。
+    const trimmed = list.slice(-max);
+    try { writeJson(selfFile(chatKey), trimmed); } catch (error) {
+      console.warn('[memory] 写自身记忆失败:', error?.message ?? error);
+    }
+    return entry;
+  }
+
+  /** 读全部自身记忆（新的在前）。 */
+  selfNotes(chatKey) {
+    return loadSelf(chatKey).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  /** 是否已有自身记忆（用于"蒸馏前先看有没有值得写的"这类判断）。 */
+  hasSelf(chatKey) {
+    return loadSelf(chatKey).length > 0;
+  }
+
+  /** 清空某会话的自身记忆（随 removeChat 一起清；也可单独调）。 */
+  clearSelf(chatKey) {
+    try { fs.rmSync(selfFile(chatKey), { force: true }); return true; } catch { return false; }
+  }
+
+  /**
+   * 渲染【自身状态】段（供提示词注入 —— 与【记忆】同属易变区，别放稳定前缀）。
+   * 返回 '' 表示没有可注入的内容。
+   */
+  formatSelfForPrompt(chatKey, { limit = 10 } = {}) {
+    const list = loadSelf(chatKey);
+    if (!list.length) return '';
+    const lines = ['【自身状态】以下是你自己需要跨轮/跨会话记住的事（目标、规则、待办、答案等）：'];
+    for (const e of list.slice(-limit)) lines.push(`- ${e.content}`);
     return lines.join('\n');
   }
 

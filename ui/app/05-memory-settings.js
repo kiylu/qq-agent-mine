@@ -169,6 +169,11 @@ async function loadMemoryDetail(chatKey) {
     } else {
       consolidateStatusHtml = `<span id="mem-consolidate-status" class="muted"></span>`;
     }
+    // 自身状态（②P2）：机器人自己跨会话的私有状态，随"会话关闭蒸馏"或 remember_self 写入。
+    const selfNotes = Array.isArray(mem.selfNotes) ? mem.selfNotes : [];
+    const selfHtml = selfNotes.length
+      ? `<details class="collapsible mem-fold"><summary><span class="mem-who">🪞 自身状态（${selfNotes.length} 条）</span></summary><div class="coll-body">${esc(selfNotes.map((e) => `- ${e.content}`).join('\n'))}</div></details>`
+      : '';
     detail.innerHTML = `
       <div class="detail-header">
         <h2>${esc(formatChatTitle(chatKey, chatNameOf(chatKey)))} 的记忆</h2>
@@ -180,6 +185,7 @@ async function loadMemoryDetail(chatKey) {
         </div>
       </div>
       ${membersHtml}
+      ${selfHtml}
       ${rows || '<div class="muted" style="padding:10px">还没有任何群友印象（可点右上角「＋ 添加印象」手动记，或点「整理本群记忆」让模型从聊天记录里提炼）。</div>'}
     `;
     const loadMembersBtn = $('#mem-load-members-btn');

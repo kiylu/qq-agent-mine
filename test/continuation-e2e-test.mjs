@@ -117,6 +117,26 @@ await check('沉默重置后的下一轮又能走 continuation（链路自愈）
   assert.equal(JSON.stringify(prefix), JSON.stringify(prev.messages), '软重置后应重新开始锚定并复用前缀');
 });
 
+// ═══ 场景 6：会话关闭触发蒸馏（②P2）═══
+// 沉默超阈值 → 关闭缓冲时，会发一次"蒸馏请求"（系统提示含"记忆归档"），
+// 把上一轮 assistant 的思考提炼成【自身状态】写盘。
+await check('沉默关闭会话时触发蒸馏：自身状态写入记忆', async () => {
+  // 先建立一段带"思考"的会话（脚本里 assistant 会输出可被蒸馏的正文）
+  llm.state.script.length = 0;   // 清空脚本队列，改用默认响应
+  await fire('@覆盖Bot 我在想谜底', 70010);
+  await sleep(7000);            // 超阈值，下次触发时关闭并蒸馏
+
+  const before = llm.state.requests.length;
+  pushGroupMsg(111, '张三', '@覆盖Bot 沉默之后', 70011);
+  await waitFor(() => llm.state.requests.length > before, 8000, '沉默后触发');
+  await sleep(1200);            // 等 #distillAndClose 的 fire-and-forget 跑完
+
+  const distilledReqs = llm.state.requests.filter(
+    (r) => String(r.messages?.[0]?.content || '').includes('记忆归档')
+  );
+  assert.ok(distilledReqs.length >= 1, '关闭会话时应发出一次蒸馏请求');
+});
+
 await teardown();
 
 console.log(`\n会话延续端到端：通过 ${pass.length}，失败 ${fail.length}`);

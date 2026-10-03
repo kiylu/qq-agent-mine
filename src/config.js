@@ -295,7 +295,14 @@ export const DEFAULT_CONFIG = {
       //   0           → 不按沉默切分，只靠下面两个上限兜底。
       silenceMinutes: null,
       maxTurns: 30,             // 单个会话最多连续多少轮，超了软重置
-      maxChars: 240000          // 消息序列字符数上限（≈60k token），超了软重置
+      maxChars: 240000,         // 消息序列字符数上限（≈60k token），超了软重置
+      // 会话关闭时把思考链蒸馏成"自身状态"（②P2）：
+      // 关闭那一刻是唯一真正握有完整 CoT 的时刻 —— 调一次小模型，把内部推理
+      // 提炼成"未完成目标 / 自定规则 / 暗牌答案 / 待办"，写进自身记忆，
+      // 下次全新会话在【自身状态】段注入。关闭时不做就永久丢失。
+      distillOnClose: true,
+      // 蒸馏输入（buffer 里 assistant 文本）的字符预算 —— 防止一次蒸馏塞爆小模型。
+      distillMaxChars: 12000
     },
     // ── 响应档位的作用范围 ──
     unifiedTier: true,          // true = 上方滑条对所有会话生效；false = 可按群单独设置

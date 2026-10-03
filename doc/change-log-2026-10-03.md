@@ -190,3 +190,104 @@ README「技术架构」第 2~4 条要改写 —— 成本模型从「无状态�
 把思考提炼成"私有状态"（未完成目标 / 自己定的规则 / 答案 / 待办），
 写进新的自身记忆（`selfNote` + `_self.json` + `remember_self` 工具），
 下次 fresh 在易变区注入【自身状态】段。
+
+---
+
+# 实施记录：问题② P2（会话关闭蒸馏 / 自身状态）
+
+状态：**已实施并通过回归**
+
+## 改了什么
+
+### `src/memory.js` —— 自身记忆（selfNote）
+
+- 新增 `_self.json`（每会话一个小文件，位于 `data/memory/<chatKey>/_self.json`），
+  格式 `[{ content, createdAt }]`。**与群友印象分开存**，不参与成员合并/整理。
+- 新增方法：`appendSelf` / `selfNotes` / `hasSelf` / `clearSelf` / `formatSelfForPrompt`。
+  - `appendSelf`：同内容去重；只保留最近 40 条（`max` 可调）——自身状态是"当前有效清单"而非日志。
+  - `formatSelfForPrompt`：渲染【自身状态】段；空 → `''`（不注入）。
+- **修正**：`#ensureChat` 扫描会话目录时跳过 `_self.json`（原先只跳 `_meta.json`），
+  否则会被当成一个"无 QQ 号的成员"混进成员列表。
+- `removeChat` 已覆盖 `_self.json`（它删的是目录内全部文件）。
+
+### `src/tools.js` —— 新增 `remember_self` 工具
+
+- 让模型**主动**记自己的状态（进行中的任务、自定规则、谜底、待办）。
+- 与 `memory_append` 明确区分：那个记"对群友的印象"，这个记"你自己"。
+
+### `src/prompt.js` —— 注入【自身状态】段 + 引导
+
+- `buildUserPrompt`：在【记忆】之后（同属易变区，不参与稳定前缀）注入【自身状态】。
+- `buildContinuationPrompt`：延续轮同样带上（模型可能上轮刚写过）。
+- `memoryRules()` 新增两行说明：`remember_self` 的用途；以及"思考不发群里，
+  但关键暗牌答案/约定主动落一下更稳"。
+- 引导说明补一句指向【自身状态】段。
+- 头部注释 + `DISTILL` 相关注释同步新成本模型。
+
+### `src/conversation.js` —— 蒸馏核心
+
+- `collectAssistantText(messages, { maxChars })`：从缓冲里抽 assistant 正文（跳过工具参数），
+  这是蒸馏的输入。
+- `DISTILL_SYSTEM_PROMPT` + `parseDistillResult(text, { max })`：
+  让模型只输出 JSON 数组；解析容错（剥 markdown 围栏、截 `[...]`、对象数组取 `content`、去重、上限 5 条）。
+- `distillBuffer({ memory, chatKey, messages, callModel, maxChars })`：
+  抽 CoT → 调一次模型 → 写自身记忆；没有可蒸馏文本时不调模型。
+
+### `src/orchestrator.js` —— 接上关闭流程
+
+- 新增私有方法 `#distillAndClose(chatKey, buffer, reason)`：
+  **先 `clear` 缓冲，再 fire-and-forget 蒸馏**（不阻塞当前运行）。
+  - 用 `this.distilling` 集合防同会话并发重复蒸馏。
+  - 结果由 `getConfig().store.continuation.distillOnClose`（默认 true）开关。
+  - 成功后 `emit('self-distilled', ...)`，日志可查。
+- fresh 分支里把原来的 `this.conversation.clear(chatKey)` 换成 `#distillAndClose(...)`。
+  **所有 fresh 原因都覆盖**：沉默超阈值 / systemPrompt 变化 / 工具集变化 / 超轮次 / 超体积 / 首轮无缓冲（无缓冲时直接 clear，不蒸馏）。
+- 构造函数新增 `this.distilling = new Set()`。
+
+> **为什么是"下一次"生效**：fresh 分支里 `userPrompt` 在本决策之前就已构造好，
+> 所以本轮蒸馏的产物最快在**下一轮 wake** 的提示词构造时被读到 —— 这本就是它
+> 的设计意图（为"下次重开"准备）。fire-and-forget 也保证关闭动作不会拖慢当前会话。
+
+### `src/config.js`
+
+`store.continuation` 新增两项：
+```
+distillOnClose: true,        // 关闭时蒸馏（关闭时不做就永久丢失）
+distillMaxChars: 12000       // 蒸馏输入的字符预算
+```
+
+### `src/routes.js` + `ui/app/05-memory-settings.js`
+
+- `GET /api/memory-files/<kind>_<id>` 响应新增 `selfNotes`。
+- 记忆详情页新增「🪞 自身状态（N 条）」可折叠区块（默认收起，有内容才显示）。
+
+## 新增测试
+
+`test/self-note-test.mjs`（17 项）：
+- selfNote 写/读/去重/上限/落盘可读；`_self.json` 不被当群友印象；`clearSelf`。
+- `formatSelfForPrompt`：有内容带段名、空返回 `''`。
+- `collectAssistantText`：只取 assistant 正文、跳过工具参数与 user、遵守 maxChars。
+- `parseDistillResult`：直 JSON / markdown 围栏 / 对象数组 / 非法输入 / 去重 / 上限。
+- `distillBuffer`：注入假模型，校验系统提示 + CoT 原文 + 落点；无可蒸馏文本不调模型；空数组不写入。
+- 已注册进 `npm test`；另加 `npm run test:self`。
+
+## 验证结果
+
+| 套件 | 结果 |
+|---|---|
+| `self-note-test.mjs`（新增） | ✅ 17/17 |
+| `npm test`（全量链路） | ✅ 全绿（exit 0，0 失败） |
+| continuation / prompt / anchor / wake / selftest / audit | ✅ 全部通过 |
+
+## 文档同步
+
+- README「技术架构」第 2~4 条已改写：成本模型从「无状态、单次成本恒定」→
+  「**有界增长、单价靠缓存压住**」；能力清单新增"记得住自己的事"。
+- `src/prompt.js` 头部注释同步。
+
+## 下一步（P3，未做）
+
+- 媒体瘦身：continue 时把历史 `image_url` 换文字占位，避免图片 token 每轮重发。
+- buffer 归档回溯（最近 N 个）。
+- UI：会话页显示"延续中（N 轮）"标记 + 「重开会话」按钮已有雏形，可再打磨。
+

@@ -240,3 +240,115 @@ export function sameToolNames(a, b) {
   for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
   return true;
 }
+
+// ── 会话关闭时的蒸馏（②P2）────────────────────────────────────────────
+// 关闭那一刻是唯一真正握有完整思考链的时刻。调一次小模型，把它提炼成
+// "需要跨会话记住的私有状态"，写进自身记忆（_self.json）的【自身状态】段。
+//
+// 为什么必须做：延续期间思考天然留在上下文里；一旦关闭（沉默/超限），
+// 那些思考就永久蒸发。海龟汤这类"暗牌"任务，谜底就在机器人的 CoT 里 ——
+// 不蒸馏 = 下次重开时它把自己的谜底忘了。
+
+/**
+ * 从会话缓冲里抽出 assistant 的"思考/正文"文本（即机器人自己的私有推理）。
+ * 这是蒸馏的输入。工具调用参数**不算**思考内容，跳过。
+ */
+export function collectAssistantText(messages, { maxChars = 12000 } = {}) {
+  const chunks = [];
+  let total = 0;
+  for (const m of messages || []) {
+    if (m?.role !== 'assistant') continue;
+    const c = m?.content;
+    const text = typeof c === 'string'
+      ? c
+      : Array.isArray(c)
+        ? c.filter((p) => p && typeof p.text === 'string').map((p) => p.text).join('')
+        : '';
+    const t = String(text ?? '').trim();
+    if (!t) continue;
+    chunks.push(t);
+    total += t.length;
+    if (total >= maxChars) break;
+  }
+  let out = chunks.join('\n---\n');
+  if (out.length > maxChars) out = out.slice(0, maxChars);
+  return out;
+}
+
+export const DISTILL_SYSTEM_PROMPT = [
+  '你在帮一个群聊 AI 机器人做"会话关闭前的记忆归档"。',
+  '下面会给你这个机器人在刚刚结束的一段群聊会话中**没有发送到群里**的内部思考与正文。',
+  '请从中提炼出**需要跨会话记住的私有状态**，只包括：',
+  '1. 未完成的目标 / 正在做的事（例如"我在和群友玩海龟汤，还在猜"）；',
+  '2. 机器人自己定下的规则 / 承诺 / 约定；',
+  '3. 答案 / 关键事实（例如它其实知道自己出的谜底是什么）；',
+  '4. 明确写下的待办。',
+  '要求：',
+  '- 每条用一句简明中文，客观陈述，不要用"我"以外的第一人称口吻解释。',
+  '- 只写**确实存在于思考里**的内容，禁止脑补、禁止写与人设/群友印象无关的废话。',
+  '- 最多 5 条。没有值得跨会话记住的内容时，只回复一个空 JSON 数组。',
+  '- **只输出 JSON 数组**，形如 ["...","..."]，不要任何额外文字、不要 markdown 代码块。'
+].join('\n');
+
+/**
+ * 解析蒸馏结果。返回 string[]（最多 5 条，去空、去重）。
+ * 容错：模型可能包 markdown 代码块、可能给对象数组 —— 都尽量捞出来。
+ */
+export function parseDistillResult(text, { max = 5 } = {}) {
+  let s = String(text ?? '').trim();
+  if (!s) return [];
+  // 剥 markdown 代码围栏
+  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(s);
+  if (fence) s = fence[1].trim();
+  // 截取第一个 '[' 到最后一个 ']'
+  const a = s.indexOf('[');
+  const b = s.lastIndexOf(']');
+  if (a >= 0 && b > a) s = s.slice(a, b + 1);
+  let arr = null;
+  try { arr = JSON.parse(s); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of arr) {
+    const content = typeof item === 'string' ? item : (item && typeof item.content === 'string' ? item.content : '');
+    const t = String(content).trim().slice(0, 400);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * 蒸馏一次并写入自身记忆。
+ * @param {object} p
+ * @param {object} p.memory       MemoryStore（写 appendSelf）
+ * @param {string} p.chatKey
+ * @param {Array}  p.messages     会话缓冲的消息序列
+ * @param {Function} p.callModel  形如 (args) => Promise<{message,usage}>，通常传 chatCompletionWithRetry
+ * @param {object} [p.api]        渠道配置（baseUrl/model，供日志）
+ * @param {number} [p.maxChars]   蒸馏输入字符预算
+ * @returns {Promise<string[]>}   实际写入的条目
+ */
+export async function distillBuffer({ memory, chatKey, messages, callModel, maxChars = 12000 }) {
+  if (!memory || !chatKey || typeof callModel !== 'function') return [];
+  const cot = collectAssistantText(messages, { maxChars });
+  if (!cot) return [];
+  const r = await callModel({
+    messages: [
+      { role: 'system', content: DISTILL_SYSTEM_PROMPT },
+      { role: 'user', content: `以下是这段会话的内部思考：\n\n${cot}` }
+    ],
+    maxTokens: 600,
+    temperature: 0.2
+  });
+  const text = r?.message?.content;
+  const items = parseDistillResult(text);
+  const written = [];
+  for (const content of items) {
+    const e = memory.appendSelf(chatKey, content);
+    if (e) written.push(e.content);
+  }
+  return written;
+}

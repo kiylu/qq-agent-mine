@@ -675,6 +675,27 @@ function registerAllTools() {
   });
 
   registerTool({
+    id: 'remember_self',
+    name: '记录自身状态',
+    description: '记录"你自己"需要跨轮/跨会话记住的私有状态：未完成的目标、你自己定下的规则（如海龟汤里你打算守的约定）、谜底/答案、还没做完的待办。与"对群友的印象"无关，那些用 memory_append。每次只记一条简明的事，重复内容不会重复写入。',
+    category: 'memory',
+    icon: '🪞',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: '要记住的自身状态（简明一句，≤200字）' }
+      },
+      required: ['content']
+    },
+    async execute(ctx, args) {
+      const content = String(args.content ?? '').trim();
+      if (!content) return err('content 不能为空');
+      const entry = ctx.memory.appendSelf(ctx.chatKey, content);
+      return ok({ saved: Boolean(entry), entry });
+    }
+  });
+
+  registerTool({
     id: 'memory_query',
     name: '查询印象',
     description: '查看当前会话里你对群友的长期印象。不传 userId 返回全部；传 userId 只看某一个人。',
