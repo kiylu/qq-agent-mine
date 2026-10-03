@@ -449,7 +449,7 @@ refs:
   assert.ok(replyPrompt.includes('[引用 被引用者：被引用的原话]'), '引用原文被解析进上下文');
   pass('引用解析与 reply 段发送正确');
 
-  // ── 场景 5：群友印象跨运行持久（无状态但记忆保留，且按相关成员注入） ──
+  // ── 场景 5：群友印象跨运行持久（会话会重开，但记忆保留，且按相关成员注入） ──
   llm.state.script.push(
     { toolCalls: [{ name: 'memory_append', args: { category: 'memberImpression', userId: 111, target: '张三', content: '张三喜欢聊今晚吃什么' } }, { name: 'send_message', args: { messages: ['记下了'] } }] },
     { content: 'ok' }

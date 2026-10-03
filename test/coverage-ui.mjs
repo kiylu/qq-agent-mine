@@ -145,6 +145,26 @@ await c.check('index.html 的本地资源引用全部存在', () => {
   }
 });
 
+await c.check('架构描述与「会话延续」对齐（2026-10-03 改造后已不是无状态）', () => {
+  const pkgDesc = String(JSON.parse(read('package.json')).description || '');
+  assert.ok(pkgDesc.length > 0, 'package.json 缺 description');
+  assert.ok(/会话延续/.test(pkgDesc),
+    `package.json 的 description 还在说「无状态」：${pkgDesc}`);
+  assert.ok(!/无状态/.test(pkgDesc),
+    `package.json 的 description 残留「无状态」：${pkgDesc}`);
+
+  // landing 是对外的落地页，宣称与实际架构必须一致（改造后每次触发不再是独立会话）。
+  assert.ok(!/无状态/.test(landing),
+    'landing.html 还在宣称「无状态会话」—— 架构早已改为会话延续');
+
+  // orchestrator 头注释是新人第一份文档，说反了会直接误导后续改动。
+  const orch = read('src/orchestrator.js').slice(0, 2000);
+  assert.ok(!/"无状态运行"核心/.test(orch),
+    'orchestrator.js 头注释仍称「无状态运行」核心，与 continuation 分支矛盾');
+  assert.ok(/会话延续/.test(orch),
+    'orchestrator.js 头注释没提会话延续，改动背景丢失');
+});
+
 await c.check('landing.html 的本地资源引用全部存在（曾经引用过不存在的 /assets/theme.*）', () => {
   // ⚠️ landing.html 是**部署到官网**的落地页：/assets/theme.* 是站点级主题包，
   // 存在于服务器上而不在本仓库 ui/ 下（本地直开由 .no-theme 兜底，见页面注释）。
