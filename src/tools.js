@@ -648,7 +648,7 @@ function registerAllTools() {
   registerTool({
     id: 'memory_append',
     name: '记录印象',
-    description: '记一条对群友的长期印象（之后每轮提示词的【记忆】段都会带上它）。只记"以后和这个人打交道时用得上"的稳定印象：他的身份/关系、说话风格、爱玩的梗、雷点、常聊话题、别踩的坑。太临时的事情不要记 —— 群里刚聊过的事你上文本来就还留着，不用记。userId 必须填对方的 QQ 号（不知道就先调 get_active_members / get_recent_messages 查）；target 填备注名/群名片/昵称，用于展示。',
+    description: '记一条对群友的长期印象（之后每轮提示词的【记忆】段都会带上它）。只记"以后和这个人打交道时用得上"的稳定印象：他的身份/关系、说话风格、爱玩的梗、雷点、常聊话题、别踩的坑。太临时的事情不要记。userId 必须填对方的 QQ 号（不知道就先调 get_active_members / get_recent_messages 查）；target 填备注名/群名片/昵称，用于展示。',
     category: 'memory',
     icon: '🧠',
     parameters: {
@@ -823,7 +823,7 @@ function registerAllTools() {
   registerTool({
     id: 'finish',
     name: '结束本轮',
-    description: '明确结束本次处理（表示你看完了、决定了下一步）。看完不打算说话时调用它（summary 写一句给自己看的理由）；说完话想收尾时也可以调用。不调用也可以——直接结束文本输出同样代表结束。注意它只结束你**这一轮**的发言，不代表对话结束：群里安静一段时间后你还会在同一段对话里被叫起来，上文也还在。处于活跃期时，若判断话题已结束/偏离，也用它结束（reason 填"话题结束"）。',
+    description: '明确结束本次处理（表示你看完了、决定了下一步）。看完不打算说话时调用它（summary 写一句给自己看的理由）；说完话想收尾时也可以调用。不调用也可以——直接结束文本输出同样代表结束。处于活跃期时，若判断话题已结束/偏离，也用它结束（reason 填"话题结束"）。',
     category: 'system',
     icon: '✅',
     parameters: {
