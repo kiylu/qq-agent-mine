@@ -24,7 +24,7 @@ import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } f
 import { resolveThinkingRequest, buildThinkingParams } from './thinking.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from './tools.js';
 import { modelImageVerdict } from './vision-scan.js';
-import { currentProviders } from './providers.js';
+import { currentProviders, effectiveThinkingDialect } from './providers.js';
 import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
 import { rescueUnsentReply } from './reply-rescue.js';
@@ -939,8 +939,11 @@ export class Orchestrator {
 
     let messages;
     // reasoning 旁路数组：与 messages **下标一一对应**，只存模型这一轮的私有推理
-    // （reasoning_content）。绝不混进 messages —— 它不该发回上游（重复上传 +
-    // 干扰前缀缓存），但必须留在本地给"会话关闭蒸馏"和 UI 思维链用。
+    // （reasoning_content）。默认不混进 messages —— 但"不该发回上游"只对当前渠道
+    // （Chat Completions）成立：DeepSeek 文档要求带 tools 时必须完整回传，否则 400；
+    // 实测（2026-10-04）该端点不强制校验，故维持不回传，换渠道需复验
+    // （详见 doc/todo-2026-10-04.md）。它必须留在本地给"会话关闭蒸馏"和 UI 思维链用。
+    // 「回传会干扰前缀缓存」也是错的 —— 前缀缓存按字节命中，尾部追加不破坏前缀。
     // 历史前缀的 reasoning 从缓冲里接着往下摆（缓冲只在尾部追加，下标稳定）。
     const reasonings = [];
     if (useBuffer) {
@@ -1146,7 +1149,10 @@ export class Orchestrator {
       // 发给模型的助手条目：**只带 OpenAI 规定的三个字段**。
       // ⚠️ raw（原始响应体）绝不能进 messages —— 多轮工具调用时每一轮请求都会把
       // 历史的助手条目再发一遍，带上 raw 等于把之前所有轮次的完整响应重复上传：
-      // 请求体无谓膨胀，而且这些字节随每轮响应变化，白白干扰前缀缓存。
+      // 请求体无谓膨胀、其中的 id/usage/时间戳对模型毫无意义，且 OpenAI 规定之外的
+      // 字段还可能被网关拒收。
+      // （注意：这**不影响前缀缓存** —— raw 是追加在尾部的，前缀字节不变。
+      //   "带上变化字段就会击穿缓存"是常见误解，见 src/conversation.js 顶部注释。）
       // raw 只留在 session.messages 里（UI/排障要看，没人把它发回上游）。
       const assistantEntry = {
         role: 'assistant',
@@ -2201,7 +2207,11 @@ export class Orchestrator {
     // 思考方言的**当前判定结果** —— UI 用它提示"自动判定为什么没生效"或
     // "手动指定的是什么"。没有这一段的话，用户选了 max 却没发参数只能靠猜
     // （2026-10-04 实测踩过：中转站下判成 generic，档位静默失效）。
-    const thinking = resolveThinkingRequest(cfg.api, {});
+    // ⚠️ 方言 2026-10-04 起是**按供应商**存的，这里必须走同一个合并函数，
+    //    否则状态页显示的是全局默认值、与请求实际用的不一致。
+    const thinking = resolveThinkingRequest(
+      { ...cfg.api, thinkingDialect: effectiveThinkingDialect(cfg) }, {}
+    );
     const built = buildThinkingParams({ effort: thinking.effort, dialect: thinking.dialect, budget: thinking.budget });
     return {
       paused: this.paused,

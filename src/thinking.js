@@ -37,8 +37,8 @@ const MODEL_RULES = [
   { dialect: 'qwen', host: null, model: /^(qwen|qwq)/i, supports: ['off', 'on', 'budget'] },
   { dialect: 'glm', host: /bigmodel\.cn$/i, model: /glm/i, supports: ['off', 'on'] },
   { dialect: 'glm', host: null, model: /glm-(z|4|5)/i, supports: ['off', 'on'] },
-  { dialect: 'openai-o', host: /openai\.com$/i, model: /^(o[1-9]|gpt-5)/i, supports: ['effort'] },
-  { dialect: 'openai-o', host: null, model: /^(o[1-9](-|$)|gpt-5)/i, supports: ['effort'] },
+  { dialect: 'openai-o', host: /openai\.com$/i, model: /^(o[1-9]|gpt-([5-9]|\d{2}))/i, supports: ['effort'] },
+  { dialect: 'openai-o', host: null, model: /^(o[1-9](-|$)|gpt-([5-9]|\d{2}))/i, supports: ['effort'] },
   { dialect: 'anthropic', host: /(anthropic|claude)\./i, model: /claude/i, supports: ['off', 'on', 'budget'] },
   { dialect: 'anthropic', host: null, model: /claude/i, supports: ['off', 'on', 'budget'] },
   { dialect: 'gemini', host: /(googleapis|generativelanguage)\./i, model: /gemini/i, supports: ['off', 'on', 'budget'] },
@@ -273,11 +273,15 @@ export function buildThinkingParams({ effort = '', dialect = 'generic', budget =
     case 'glm': {
       if (on) { params.thinking = { type: 'enabled' }; applied = true; omitTemperature = true; }
       else if (e === 'off') { params.thinking = { type: 'disabled' }; applied = true; }
-      // effort 与开关**并列**，不塞进 if(on) 里。
+      // effort 的落点写在 if(on) 之外，但条件 `e && e !== 'off'` 与 `on` **恒等**
+      // （见上方 `const on = Boolean(e) && e !== 'off'`）→ 行为上等价于"只在开启时发"，
+      // `off` 档**不发** effort。这是刻意的：官方文档在 thinking:disabled 下**没有定义**
+      // reasoning_effort 的语义，发了属于未定义行为。
       // 依据（2026-10-04 实测 scripts/probe-thinking-effort.mjs，9 组 × 3 次取中位数）：
-      //   thinking=disabled 时 rc_tok 恒为 0，但 effort 仍在改变 completion/正文
-      //   （无 3265 / low 2589 / high 2524 / max 3142）→ 它作用在正文投入上，
-      //   与思考开关是两条独立的轴。所以关掉思考时也照发 effort。
+      //   thinking=disabled 时 rc_tok 恒为 0，而 effort 仍在改变 completion/正文
+      //   （无 3265 / low 2589 / high 2524 / max 3142）→ 它作用在正文投入上，与思考
+      //   开关是两条轴。但"两轴独立"**推不出**"off 档也该发 effort"（disabled 下 effort
+      //   是否真正生效，样本量不足、尚未证实），所以这里不发。
       // ⚠️ 两条实测结论，都不要在注释里简化成"档位越大思考越长"：
       //   1) 档位**非单调**：on 组 rc 中位数 无 7588 / low 4521 / medium 5841 /
       //      high 5585 / max 8192 —— low 明显低于"不指定"，medium 甚至高于 high。

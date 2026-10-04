@@ -191,7 +191,7 @@ function renderApiSection(c) {
         <button class="btn" id="open-model-config-btn">⚙ 模型配置</button>
         <button class="btn" id="open-model-manage-btn">🗂 模型管理</button>
       </div>
-      <div class="hint" id="provider-hint" style="margin-top:6px">${currentProvider ? `当前：${esc(currentProvider.displayName)} · ${esc(c.api.model || '未选模型')} @ ${esc(currentProvider.baseURL)}${currentProvider.hasKey ? ' · 已保存 API Key（不显示）' : ' · 未保存 API Key'}` : '尚未选择模型'}</div>
+      <div class="hint" id="provider-hint" style="margin-top:6px">${currentProvider ? `当前：${esc(provLabel(currentProvider))} · ${esc(c.api.model || '未选模型')} @ ${esc(currentProvider.baseURL)}${currentProvider.hasKey ? ' · 已保存 API Key（不显示）' : ' · 未保存 API Key'}` : '尚未选择模型'}</div>
       <div class="hint" id="model-vision-hint" style="margin-top:6px"></div>
       <input type="hidden" id="cfg-provider" value="${esc(c.api.provider || '')}" />
       <input type="hidden" id="cfg-model" value="${esc(c.api.model || '')}" />
@@ -379,7 +379,7 @@ function renderMemorySettingsSection(c) {
   const providers = state.providers || [];
   const useChat = mem.useChatModel !== false;
   const selP = providers.find((p) => p.id === mem.provider);
-  const currentDisplay = selP ? `${selP.displayName || selP.id} · ${mem.model || '未选模型'}` : (mem.model || '未选模型');
+  const currentDisplay = selP ? `${provLabel(selP)} · ${mem.model || '未选模型'}` : (mem.model || '未选模型');
   return `
     <h3 id="settings-memory">记忆整理</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-mem-consolidate" ${mem.consolidateEnabled !== false ? 'checked' : ''} />
@@ -391,7 +391,7 @@ function renderMemorySettingsSection(c) {
         <div style="display:flex;gap:8px">
           <input type="text" id="cfg-mem-model-pick" readonly placeholder="点击选择模型" value="${esc(currentDisplay)}" style="flex:1;cursor:pointer" />
         </div>
-        <div class="hint" id="mem-model-hint">${selP ? `当前：${esc(selP.displayName)} @ ${esc(selP.baseURL)}` : '尚未选择专用模型'}</div>
+        <div class="hint" id="mem-model-hint">${selP ? `当前：${esc(provLabel(selP))} @ ${esc(selP.baseURL)}` : '尚未选择专用模型'}</div>
         <input type="hidden" id="cfg-mem-provider" value="${esc(mem.provider || '')}" />
         <input type="hidden" id="cfg-mem-model" value="${esc(mem.model || '')}" />
       </div>
@@ -844,6 +844,7 @@ return `
             ['low', 'low（更快更省）'],
             ['medium', 'medium（适中）'],
             ['high', 'high（更细致）'],
+            ['xhigh', 'xhigh（超高）'],
             ['max', 'max（最强推理）']
           ].map(([v, l]) => {
             const eff = c.api?.thinkingEffort || '';
@@ -851,15 +852,14 @@ return `
             // (mode, effort) 二维状态压成一维下拉。
             // 折叠规则：off 优先 → 其次具体档位 → "on 但无档"与"auto"都显示为 default。
             //
-            // ⚠️ 历史包袱（2026-10-04）：以前有 'on-noeffort' / 'xhigh' 两个独立档，
-            //  它们与 (mode, effort) 的映射让"明确开启但不指定强度"这一状态在一次
-            //  无关保存里被静默改写成 auto（见 08-modals.js saveConfig 的注释）。
-            //  现在两档都并入 default：`on + 无档` 与 `auto` 对 DeepSeek 而言
-            //  **请求体完全相同**（都不发任何 thinking 参数），本来就该合并显示。
-            //  读旧配置时把 xhigh 就近归到 high（值仍兼容，见 thinking.js 的映射表）。
-            const sel = mode === 'off'
-              ? 'off'
-              : ({ xhigh: 'high' }[eff] ?? eff);   // 旧值归一
+            // 档位值本身直接落库（含 xhigh），不再做读时归一 —— 旧配置里的
+            // 'on-noeffort' 已在 08-modals.js 的保存侧并入 default。
+            //
+            // ⚠️ xhigh 在多数渠道会**被映射掉**（不是原样发出），这是有意的：
+            //   DeepSeek 官方映射表里 xhigh→high；OpenAI/xAI 的合法值只到 high。
+            //   保留这一档是为了跟着各家的档位口径走，且将来某家真支持 xhigh 时
+            //   不用再动 UI。映射表见 src/thinking.js 的 DEEPSEEK_EFFORTS / OPENAI_EFFORTS。
+            const sel = mode === 'off' ? 'off' : eff;
             return `<option value="${v}" ${sel === v ? 'selected' : ''}>${l}</option>`;
           }).join('')}
         </select>
@@ -1719,57 +1719,10 @@ function renderToolsSection(c) {
  */
 function renderDeveloperSection(c) {
   const on = c.api?.debugStoreRequest === true;
-  const cur = c.api?.thinkingDialect || '';
-  // 运行时判定结果（后端 statusSummary 算好）—— 告诉用户"自动判成了什么"，
-  // 否则他看到一个不生效的档位根本不知道该手动选哪个。
-  const th = (state.status?.orchestrator?.thinking) || null;
-  const DIALECT_OPTIONS = [
-    ['', '自动判定（推荐）'],
-    ['deepseek', 'DeepSeek（thinking + reasoning_effort）'],
-    ['anthropic', 'Claude / Anthropic（thinking + budget）'],
-    ['qwen', '通义千问（enable_thinking + budget）'],
-    ['glm', '智谱 GLM（thinking）'],
-    ['openai-o', 'OpenAI o / gpt-5（reasoning_effort）'],
-    ['gemini', 'Gemini（thinking_config）'],
-    ['openrouter', 'OpenRouter（reasoning）'],
-    ['xai', 'xAI / Grok（reasoning_effort）'],
-    ['generic', '通用：明确不发送任何思考参数']
-  ];
-  // 失效提醒：用户显式选了档位，但该渠道判成 generic → 档位不会生效。
-  const ineffective = th && th.effort && th.effort !== 'off' && !th.applied;
   return `
     <div class="card">
       <div class="card-title">开发者</div>
       <div class="card-body">
-        <div class="field">
-          <label>思考参数方言</label>
-          <select id="cfg-thinking-dialect">
-            ${DIALECT_OPTIONS.map(([v, l]) =>
-              `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
-          </select>
-          <div class="hint">
-            各厂商的思考参数<strong>字段名完全不同</strong>（DeepSeek 用
-            <code>reasoning_effort</code>、Claude 用 <code>thinking.budget_tokens</code>、
-            Qwen 用 <code>enable_thinking</code>），发错字段名会被网关拒绝。
-            自动判定靠猜域名与模型名，<strong>中转站常猜不中</strong> —— 这时手动指定。
-          </div>
-          ${th ? `<div class="hint" style="margin-top:6px">
-            当前判定：<strong>${esc(th.dialectLabel || th.dialect || '—')}</strong>
-            ${th.manual ? '（手动指定）' : '（自动）'}
-            ｜ 依据：${esc(th.reason || '—')}
-            ${th.sentParams && Object.keys(th.sentParams).length
-              ? `｜ 实际发送 <code>${esc(JSON.stringify(th.sentParams))}</code>`
-              : ''}
-          </div>` : ''}
-          ${ineffective ? `<div class="hint" style="color:var(--color-text-danger);margin-top:6px">
-            ⚠️ 你选了档位 <code>${esc(th.effort)}</code>，但当前渠道判定为
-            <strong>通用（不发送思考参数）</strong> —— <strong>该档位不会生效</strong>，
-            模型会用自己的默认强度。若本渠道确实支持 DeepSeek 协议，请在上方手动指定。
-          </div>` : ''}
-          ${!th?.manual && !ineffective && th?.effort && th?.effort !== 'off' && th?.applied === false
-            ? `<div class="hint" style="margin-top:6px">档位 <code>${esc(th.effort)}</code> 已生效（自动判定为 ${esc(th.dialect)}）。</div>`
-            : ''}
-        </div>
         <div class="field">
           <label class="check">
             <input type="checkbox" id="cfg-debug-store-request" ${on ? 'checked' : ''}>

@@ -1,6 +1,7 @@
 // OpenAI 兼容 Chat Completions 客户端（非流式）。
 // 支持工具调用、usage 统计、可自选模型 —— 这是与 DSH 解耦后的"大脑"接口。
 import { getConfig } from './config.js';
+import { effectiveThinkingDialect } from './providers.js';
 import { resolveModelPrice, priceAt } from './model-prices.js';
 import { skillManager } from './skills/manager.js';
 import {
@@ -58,10 +59,22 @@ export function resolveApiKey(cfg) {
   return direct === '******' ? '' : direct;
 }
 
-/** 返回一个 key 已解析好的 api 配置（不影响配置本体）。 */
+/**
+ * 返回一个 key 与**思考方言**都已解析好的 api 配置（不影响配置本体）。
+ *
+ * 思考方言为什么在这里注入：它是**渠道属性**（providers[].thinkingDialect），
+ * 而 `resolveThinkingRequest` 只认 `api.thinkingDialect` 这一个字段。
+ * 在这里把「供应商自己的值 > 全局默认值」合并好，下游（llm.js 自己 +
+ * orchestrator.statusSummary）就都拿到同一个结果，不必各自再查一遍 providers，
+ * 也不会出现"请求用 A 方言、状态页显示 B 方言"的漂移。
+ */
 function effectiveApi() {
   const cfg = getConfig();
-  return { ...cfg.api, apiKey: resolveApiKey(cfg) };
+  return {
+    ...cfg.api,
+    apiKey: resolveApiKey(cfg),
+    thinkingDialect: effectiveThinkingDialect(cfg)
+  };
 }
 
 /**
@@ -118,7 +131,14 @@ function resolveProviderEndpoint(providerId) {
   const p = (cfg.providers || []).find((x) => x.id === pid);
   if (!p || !String(p.baseURL ?? '').trim()) return null;
   const key = String(cfg.dshProviderKeys?.[pid] ?? p.apiKey ?? '').trim();
-  return { baseUrl: String(p.baseURL).trim(), apiKey: key === '******' ? '' : key };
+  return {
+    baseUrl: String(p.baseURL).trim(),
+    apiKey: key === '******' ? '' : key,
+    // 备选模型可能指向**另一个供应商** → 思考方言要跟着它走，否则会拿主模型的
+    // 渠道方言去请求别的网关（发错参数 → 被拒 → 白打一次降级重试）。
+    // 与 effectiveThinkingDialect 同口径：只看该供应商自己的值，没有即自动判定。
+    thinkingDialect: String(p.thinkingDialect ?? '').trim()
+  };
 }
 
 /**

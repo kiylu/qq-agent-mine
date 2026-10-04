@@ -8,6 +8,23 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+/**
+ * 供应商在列表/选择器里的显示名（2026-10-04 新增"备注"后统一走这里）。
+ *
+ * 优先级：用户填的**备注** > 自动生成的 displayName（一般是主机名）> id。
+ * 存在的意义：同一个中转站可以配多把 Key（= 多个供应商），自动名字会长成
+ * `market.frostfox.ai` / `market.frostfox.ai #2`，光看宿主机名分不出哪个是
+ * "DeepSeek 专用"、哪个是"OpenAI 专用" —— 备注就是给人看的名字。
+ *
+ * ⚠️ 返回的是**原始字符串**，调用方自行 esc()。
+ */
+function provLabel(p) {
+  if (!p) return '';
+  return String(p.note || '').trim()
+    || String(p.displayName || '').trim()
+    || String(p.id || '');
+}
+
 /* ── 原生对话框全面替换（2026-09-26）──────────────────────────────────
    alert / confirm / prompt 在 Electron 里是**Windows 系统对话框**，两个毛病：
    ① 关闭后窗口不认领回键盘焦点（electron/electron#41602 —— "弹过对话框后

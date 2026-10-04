@@ -646,7 +646,7 @@ function bindSettingsEvents(c) {
     let activePid = providers[0].id;
     function renderLeft() {
       left.innerHTML = providers.map((p) =>
-        `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+        `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(provLabel(p))}</div>`).join('');
       left.querySelectorAll('.mm-prov').forEach((el) => {
         el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); });
       });
@@ -684,7 +684,7 @@ function bindSettingsEvents(c) {
     // 备选仍有效），手动再选一遍纯属多余。行内只留 模型点选 + 删除。
     const provNameOf = (pid) => {
       const p = (state.providers || []).find((x) => x.id === pid);
-      return p ? (p.displayName || p.id) : '';
+      return p ? provLabel(p) : '';
     };
     box.innerHTML = `
       <table class="model-rows-table">

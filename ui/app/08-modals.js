@@ -321,6 +321,37 @@ function openModelConfigModal() {
            <button class="btn btn-primary" id="mc-save">保存</button>`
   });
 
+  /**
+   * 这个弹窗里"最终会写到哪家"的提供商 id：
+   *   已在「模型目录」里选过模型 → 用选中那家；否则用配置里当前选中的那家。
+   * 显示/清除/保存都必须走它，否则会出现"看的是 A 家、改的是 B 家"。
+   */
+  const targetPid = () => {
+    const picked = overlay.querySelector('#mc-picked')?.value || '';
+    if (picked) return picked.split('|||')[0];
+    return String(c.api?.provider || '');
+  };
+
+  /**
+   * 把「当前 API Key」那一栏同步成某个供应商的状态。
+   *
+   * 为什么需要：这一栏原本只在弹窗打开时渲染一次。用户在「模型目录」里切到另一家
+   * 的模型后，上面显示的仍是**上一家**的 Key —— 看着像"Key 不跟着变"，而点保存
+   * 会把错的 Key 写下去（2026-10-04 用户反馈）。
+   *   · 已存 Key → 显示掩码；未存 Key → 留空
+   *   · **强制回到 password 态**：之前点过「显示」的话框里是上一家的明文，
+   *     切完还留着就等于把 A 的 Key 存给了 B。
+   */
+  const syncKeyFieldTo = (target) => {
+    const input = overlay.querySelector('#mc-apikey');
+    if (!input) return;
+    const toggle = overlay.querySelector('#mc-apikey-toggle');
+    input.type = 'password';
+    input.value = target?.hasKey ? '******' : '';
+    input.placeholder = target?.hasKey ? '输入新 Key 可替换；留空保持不变' : '该提供商尚未保存 Key';
+    if (toggle) toggle.textContent = '显示';
+  };
+
   // 视觉能力扫描：POST /api/vision/scan（202 异步），进度经 SSE vision-scan
   // 事件写 #mc-vision-hint（02-sse-sessions.js 监听），完成后监听器自动刷新
   // state.visionResults 并重渲染 —— 目录徽标（visionBadge）随之更新。
@@ -355,7 +386,7 @@ function openModelConfigModal() {
     let activePid = c.api?.provider || providers[0].id;
     const renderLeft = () => {
       pl.innerHTML = providers.map((p) =>
-        `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+        `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(provLabel(p))}</div>`).join('');
       pl.querySelectorAll('.mm-prov').forEach((el) => el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); }));
     };
     const renderRight = () => {
@@ -371,6 +402,8 @@ function openModelConfigModal() {
         overlay.querySelector('#mc-model-pick').value = (names[el.dataset.model] || el.dataset.model);
         overlay.querySelector('#mc-picked').value = `${activePid}|||${el.dataset.model}`;
         overlay.querySelector('#mc-baseurl').value = p.baseURL || '';
+        // Key 必须一起切 —— 否则上面显示的还是上一家的 Key
+        syncKeyFieldTo(p);
         closeModelModal(pickOverlay);
       }));
     };
@@ -401,7 +434,7 @@ function openModelConfigModal() {
     let activePid = providers[0].id;
     const renderLeft = () => {
       pl.innerHTML = providers.map((p) =>
-        `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+        `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(provLabel(p))}</div>`).join('');
       pl.querySelectorAll('.mm-prov').forEach((el) => el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); }));
     };
     const renderRight = () => {
@@ -438,33 +471,41 @@ function openModelConfigModal() {
   overlay.querySelector('#mc-apikey-toggle').addEventListener('click', async () => {
     const input = overlay.querySelector('#mc-apikey');
     const btn = overlay.querySelector('#mc-apikey-toggle');
+    const pid = targetPid();
+    const target = (state.providers || []).find((x) => x.id === pid);
     const show = input.type === 'password';
     if (show) {
       try {
-        const pid = c.api?.provider;
         const r = pid ? await api(`/api/providers/key?providerId=${encodeURIComponent(pid)}`) : await api('/api/api-key');
         input.type = 'text';
-        input.value = String(r.apiKey || '（无）');
+        // ⚠️ 绝不能把「（无）」这类**展示用字面量**塞进 value：保存时只过滤
+        //    '******'，它会被当成真 Key 存下去，之后所有请求 401（2026-10-04 踩过）。
+        //    没有 Key 就用空串 + placeholder 表达。
+        input.value = String(r.apiKey || '');
+        input.placeholder = r.apiKey ? '' : '该提供商尚未保存 Key';
         btn.textContent = '隐藏';
       } catch (e) { alert(`读取密钥失败：${e.message}`); }
     } else {
       input.type = 'password';
-      input.value = '******';
+      // 没有 Key 就别显示掩码 —— 那会谎报"已保存"
+      input.value = target?.hasKey ? '******' : '';
+      input.placeholder = target?.hasKey ? '输入新 Key 可替换；留空保持不变' : '该提供商尚未保存 Key';
       btn.textContent = '显示';
     }
   });
   overlay.querySelector('#mc-apikey-clear').addEventListener('click', async () => {
     if (!(await uiConfirm('确定清除已保存的 API Key？'))) return;
     try {
-      const pid = c.api?.provider;
+      const pid = targetPid();
       if (pid) {
         await api('/api/providers/set-key', { method: 'POST', body: JSON.stringify({ providerId: pid, apiKey: '' }) });
       } else {
         await api('/api/config', { method: 'POST', body: JSON.stringify({ api: { apiKey: '' } }) });
       }
       const input = overlay.querySelector('#mc-apikey');
+      input.type = 'password';
       input.value = '';
-      input.placeholder = '输入新 Key 可替换';
+      input.placeholder = '该提供商尚未保存 Key';
       await loadSettings();
     } catch (e) { alert(`清除失败：${e.message}`); }
   });
@@ -517,10 +558,22 @@ function openModelConfigModal() {
     const dEl = overlay.querySelector('#mc-video-model-pick');
     if (vEl.dataset.model !== undefined || vEl.value === '') patch.visionModel = vEl.dataset.model || '';
     if (dEl.dataset.model !== undefined || dEl.value === '') patch.videoModel = dEl.dataset.model || '';
-    // Key：只在用户输入了非掩码明文时才回传（掩码/留空 = 保持）
-    const raw = (overlay.querySelector('#mc-apikey').value || '').trim();
-    if (raw && raw !== '******') patch.apiKey = raw;
+    // Key：只在用户输入了**明文**时才提交（掩码/留空 = 保持原值）。
+    // ⚠️ 有选中的供应商时必须写 **provider 级**（/api/providers/set-key）：
+    //    请求侧的优先级是 dshProviderKeys[pid] > providers[].apiKey > 顶层 api.apiKey，
+    //    写顶层会被供应商自己的 Key 盖掉 —— 表现为"改了没反应"。
+    //    （2026-10-04 用户反馈的"改 api-key 改不动"就是这个。）
+    const rawKey = (overlay.querySelector('#mc-apikey').value || '').trim();
+    const newKey = rawKey && rawKey !== '******' ? rawKey : '';
+    const keyPid = targetPid();
+    if (newKey && !keyPid) patch.apiKey = newKey;
     try {
+      if (newKey && keyPid) {
+        await api('/api/providers/set-key', {
+          method: 'POST',
+          body: JSON.stringify({ providerId: keyPid, apiKey: newKey })
+        });
+      }
       await api('/api/config', { method: 'POST', body: JSON.stringify({ api: patch }) });
       closeModelModal(overlay);
       loadSettings();
@@ -550,7 +603,7 @@ function openModelPicker() {
   let activePid = current || providers[0].id;
   function renderLeft() {
     left.innerHTML = providers.map((p) =>
-      `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+      `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(provLabel(p))}</div>`).join('');
     left.querySelectorAll('.mm-prov').forEach((el) => {
       el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); });
     });
@@ -629,7 +682,7 @@ function openMemoryModelPicker() {
   let activePid = currentProvider || providers[0].id;
   function renderLeft() {
     left.innerHTML = providers.map((p) =>
-      `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+      `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(provLabel(p))}</div>`).join('');
     left.querySelectorAll('.mm-prov').forEach((el) => {
       el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); });
     });
@@ -692,10 +745,17 @@ function openMemoryModelPicker() {
  */
 function openModelAddModal(baseUrl, apiKey, remoteModels, knownProviderId, onApplied = null) {
   const providers = state.providers || [];
-  // 已知提供商 id 优先（模型管理里"拉取模型列表"传来的），否则按 baseUrl 匹配
-  const existingProvider = providers.find((p) => p.id === knownProviderId)
-    || providers.find((p) => (p.baseURL || '').replace(/\/+$/, '') === String(baseUrl || '').replace(/\/+$/, ''));
-  const existingIds = new Set(existingProvider?.models || []);
+  // 只有从「模型管理」点"拉取模型列表"进来时才带 knownProviderId —— 那才叫
+  // "确定加到这一家"。其余情况（设置页填 baseURL+Key 自动拉取）**一律交给后端**
+  // 走 POST /api/providers，由它按「baseURL + Key」判重：
+  //   · Key 相同 → 合并到已有供应商（原来的行为）
+  //   · Key 不同 → 新建一个（同一个中转站配不同的 Key 就该是两个供应商）
+  // ⚠️ 曾经这里按 baseURL 匹配到唯一一家就直接挂靠过去，于是"想加第二把 Key"
+  //    会被静默合并进第一家 —— 2026-10-04 用户实际踩到。
+  const pinnedProvider = providers.find((p) => p.id === knownProviderId) || null;
+  // "已添加"标记只在**确定往这一家写**时才用；否则目标可能是新建的供应商，
+  // 把已有模型禁掉会让人压根没法勾（同一个模型 id 想加到新供应商是合法的）。
+  const existingIds = new Set(pinnedProvider ? (pinnedProvider.models || []) : []);
   const all = (remoteModels || []).slice();
 
   // 有多少比例的 id 是 vendor/model 形式？超过一半就启用双列
@@ -813,10 +873,16 @@ function openModelAddModal(baseUrl, apiKey, remoteModels, knownProviderId, onApp
       return;
     }
     try {
-      const body = existingProvider
-        ? { providerId: existingProvider.id, models: newModels.map((m) => ({ id: m, name: m })) }
-        : { baseUrl, apiKey, models: newModels.map((m) => ({ id: m, name: m })) };
-      const endpoint = existingProvider ? '/api/providers/models' : '/api/providers';
+      const body = pinnedProvider
+        ? { providerId: pinnedProvider.id, models: newModels.map((m) => ({ id: m, name: m })) }
+        : {
+          baseUrl,
+          apiKey,
+          models: newModels.map((m) => ({ id: m, name: m }))
+          // 不传 thinkingDialect：新供应商默认自动判定（没有"全局默认值"这一层了）。
+          // 要改方言去「模型管理」里选。
+        };
+      const endpoint = pinnedProvider ? '/api/providers/models' : '/api/providers';
       await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
       closeModelModal(overlay);
       // 2026-09-19（M9 清理）：旧 #provider-action-hint 元素已随改版消失；写不存在的
@@ -837,6 +903,34 @@ function openModelAddModal(baseUrl, apiKey, remoteModels, knownProviderId, onApp
 }
 
 /** 删除模型：左提供商 / 右模型（带删除按钮），暗红色调。 */
+/**
+ * 思考方言可选项。值必须与 src/thinking.js 的 SELECTABLE_DIALECTS 一致
+ * （'' = 不指定 → 交给 detectDialect 按域名/模型名自动判定）。
+ *
+ * 2026-10-04：方言从"全局单值（开发者菜单）"改成**按供应商**存
+ * （`providers[].thinkingDialect`）。`api.thinkingDialect` 降级为
+ * "新供应商的预选值 + 本供应商没设时的兜底"，通过旁边的「设为默认值」维护。
+ */
+const THINKING_DIALECT_OPTIONS = [
+  ['', '自动判定'],
+  ['deepseek', 'DeepSeek（thinking + reasoning_effort）'],
+  ['anthropic', 'Claude / Anthropic（thinking + budget）'],
+  ['qwen', '通义千问（enable_thinking + budget）'],
+  ['glm', '智谱 GLM（thinking）'],
+  ['openai-o', 'OpenAI o / gpt-5+（reasoning_effort）'],
+  ['gemini', 'Gemini（thinking_config）'],
+  ['openrouter', 'OpenRouter（reasoning）'],
+  ['xai', 'xAI / Grok（reasoning_effort）'],
+  ['generic', '通用：明确不发送任何思考参数']
+];
+
+/** 生成方言下拉的 option 串（selected = 当前值）。 */
+function dialectOptionsHtml(selected) {
+  const cur = String(selected ?? '');
+  return THINKING_DIALECT_OPTIONS.map(([v, l]) =>
+    `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
+}
+
 /**
  * 「模型管理」模态框（2026-09-18 改版）：左右两列。
  * 左列 = 提供商列表 + 添加提供商 / 删除提供商按钮；
@@ -875,7 +969,7 @@ function openModelManageModal() {
       </div>
       ${providers.map((p) => `
         <div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">
-          ${esc(p.displayName || p.id)}${p.id === cfgProvider ? ' <span class="muted" style="font-size:11px">（当前）</span>' : ''}
+          ${esc(provLabel(p))}${p.id === cfgProvider ? ' <span class="muted" style="font-size:11px">（当前）</span>' : ''}
         </div>`).join('') || '<div class="muted" style="padding:10px;font-size:12px">还没有提供商，点上方「添加提供商」。</div>'}`;
     left.querySelectorAll('.mm-prov').forEach((el) => {
       el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); });
@@ -889,7 +983,7 @@ function openModelManageModal() {
       const p = (state.providers || []).find((x) => x.id === activePid);
       if (!p) { alert('请先在列表里选中一个提供商。'); return; }
       const modelCount = (p.models || []).length;
-      if (!(await uiConfirm(`确定删除整个提供商「${p.displayName || p.id}」？\n\n将一并删除它的 API Key 与 ${modelCount} 个模型。此操作不可撤销。`))) return;
+      if (!(await uiConfirm(`确定删除整个提供商「${provLabel(p)}」？\n\n将一并删除它的 API Key 与 ${modelCount} 个模型。此操作不可撤销。`))) return;
       try {
         await api('/api/providers', { method: 'DELETE', body: JSON.stringify({ providerId: p.id }) });
         // 删的是当前主提供商 → 后端会清空选中模型，刷新设置页提示重新选
@@ -910,11 +1004,35 @@ function openModelManageModal() {
     right.innerHTML = `
       <div class="field"><label>Base URL</label>
         <input type="text" id="mg-baseurl" value="${esc(p.baseURL || '')}" readonly style="width:100%" /></div>
-      <div class="field"><label>API Key</label>
+      <div class="field"><label>备注（列表里显示用）</label>
         <div style="display:flex;gap:8px">
-          <input type="password" id="mg-apikey" value="${esc(p.hasKey ? '******' : '')}" readonly placeholder="${p.hasKey ? '' : '（未保存）'}" style="flex:1" />
+          <input type="text" id="mg-note" value="${esc(p.note || '')}" maxlength="40" placeholder="${esc(provLabel(p))}" style="flex:1" />
+          <button class="btn btn-small" id="mg-note-save" type="button">保存备注</button>
+        </div>
+        <div class="hint" id="mg-note-hint">留空则回退显示为 <strong>${esc(provLabel(p))}</strong>。</div></div>
+      <div class="field"><label>API Key</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="password" id="mg-apikey" value="${esc(p.hasKey ? '******' : '')}" placeholder="${p.hasKey ? '输入新 Key 可替换；留空保持不变' : '该提供商尚未保存 Key'}" autocomplete="new-password" style="flex:1;min-width:160px" />
           <button class="btn btn-small" id="mg-apikey-toggle" type="button">显示</button>
+          <button class="btn btn-small" id="mg-apikey-save" type="button">保存密钥</button>
           <button class="btn btn-small btn-danger" id="mg-apikey-clear" type="button" title="清除已保存的 API Key">清除密钥</button>
+        </div>
+        <div class="hint" id="mg-apikey-hint">
+          填明文后点「保存密钥」写入<strong>本供应商自己的 Key</strong>。留空或保持掩码 = 不改动。
+        </div></div>
+      <div class="field"><label>思考方言</label>
+        <select id="mg-dialect" style="width:100%">${dialectOptionsHtml(p.thinkingDialect || '')}</select>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+          <button class="btn btn-small" id="mg-dialect-save" type="button">保存方言</button>
+          <span class="muted" id="mg-dialect-hint" style="font-size:12px"></span>
+        </div>
+        <div class="hint">
+          <strong>使用中转站或自建网关时，请手动选择对应方言。</strong>
+          自动判定只拿官方规则匹配域名与模型名，中转站两者都不匹配，会判不出方言、
+          导致思考档位不生效。各厂商的参数字段名不同（DeepSeek 用
+          <code>reasoning_effort</code>、Claude 用 <code>thinking.budget_tokens</code>、
+          Qwen 用 <code>enable_thinking</code>），发错会被网关拒绝。
+          <strong>仅对本供应商生效；不选就是自动判定。</strong>
         </div></div>
       <div class="field"><label>模型（${(p.models || []).length} 个）</label>
         <div style="display:flex;gap:6px;margin-bottom:6px">
@@ -931,6 +1049,21 @@ function openModelManageModal() {
             </label>`).join('') || '<div class="muted" style="padding:10px">该提供商下没有模型：点「＋ 添加模型」手动加，或「拉取模型列表」自动拉取。</div>'}
         </div></div>`;
 
+    // 备注保存：列表显示名 = 备注 > displayName > id（前端 provLabel 同口径）
+    right.querySelector('#mg-note-save').addEventListener('click', async () => {
+      const input = right.querySelector('#mg-note');
+      const hint = right.querySelector('#mg-note-hint');
+      try {
+        await api('/api/providers/note', {
+          method: 'POST',
+          body: JSON.stringify({ providerId: p.id, note: input.value.trim() })
+        });
+        hint.textContent = '已保存';
+        await refresh();
+      } catch (e) {
+        hint.textContent = `保存失败：${e.message}`;
+      }
+    });
     // Key 显示/隐藏：走 /api/providers/key 取明文（与主页面同款）
     right.querySelector('#mg-apikey-toggle').addEventListener('click', async () => {
       const input = right.querySelector('#mg-apikey');
@@ -940,21 +1073,47 @@ function openModelManageModal() {
         const r = await api(`/api/providers/key?providerId=${encodeURIComponent(p.id)}`);
         if (show) {
           input.type = 'text';
-          input.value = String(r.apiKey || '（无）');
+          // 同 mc-apikey：不把「（无）」写进 value，否则会被当成真 Key 存下去
+          input.value = String(r.apiKey || '');
+          input.placeholder = r.apiKey ? '' : '该提供商尚未保存 Key';
           btn.textContent = '隐藏';
         } else {
           input.type = 'password';
           input.value = p.hasKey ? '******' : '';
+          input.placeholder = p.hasKey ? '输入新 Key 可替换；留空保持不变' : '该提供商尚未保存 Key';
           btn.textContent = '显示';
         }
       } catch (e) {
         alert(`读取密钥失败：${e.message}`);
       }
     });
+    // Key 保存（2026-10-04 新增）：这个框以前是 readonly，导致"已建好的供应商
+    // 根本改不了 Key"—— 只有清空的路，没有设置的路。
+    right.querySelector('#mg-apikey-save').addEventListener('click', async () => {
+      const input = right.querySelector('#mg-apikey');
+      const hint = right.querySelector('#mg-apikey-hint');
+      const raw = input.value.trim();
+      const key = raw && raw !== '******' ? raw : '';
+      if (!key) {
+        hint.textContent = '没有检测到新的明文 Key（留空/掩码 = 保持原值，未改动）。';
+        return;
+      }
+      try {
+        await api('/api/providers/set-key', {
+          method: 'POST',
+          body: JSON.stringify({ providerId: p.id, apiKey: key })
+        });
+        input.type = 'password';
+        hint.textContent = '已保存';
+        await refresh();
+      } catch (e) {
+        hint.textContent = `保存失败：${e.message}`;
+      }
+    });
     // Key 清除
     right.querySelector('#mg-apikey-clear').addEventListener('click', async () => {
       if (!p.hasKey) return;
-      if (!(await uiConfirm(`确定清除「${p.displayName || p.id}」的 API Key？`))) return;
+      if (!(await uiConfirm(`确定清除「${provLabel(p)}」的 API Key？`))) return;
       try {
         await api('/api/providers/set-key', { method: 'POST', body: JSON.stringify({ providerId: p.id, apiKey: '' }) });
         await loadSettings();
@@ -962,6 +1121,26 @@ function openModelManageModal() {
         renderRight();
       } catch (e) {
         alert(`清除失败：${e.message}`);
+      }
+    });
+    // 思考方言保存：写 providers[].thinkingDialect（本供应商自己的值）。
+    // 没有"全局默认值"这一层了 —— 不选就是自动判定，避免两个地方都能设、
+    // 互相打架（2026-10-04 用户反馈"设为默认值不生效/容易误导"，直接去掉）。
+    right.querySelector('#mg-dialect-save').addEventListener('click', async () => {
+      const btn = right.querySelector('#mg-dialect-save');
+      const hint = right.querySelector('#mg-dialect-hint');
+      const sel = right.querySelector('#mg-dialect');
+      btn.disabled = true;
+      try {
+        await api('/api/providers/dialect', {
+          method: 'POST',
+          body: JSON.stringify({ providerId: p.id, dialect: sel.value })
+        });
+        hint.textContent = '已保存';
+        await refresh();
+      } catch (e) {
+        hint.textContent = `保存失败：${e.message}`;
+        btn.disabled = false;
       }
     });
     // 手动添加模型（2026-09-26）：端点没 /v1/models、拉取失败、或只想补一个 id 时的主入口
@@ -992,7 +1171,7 @@ function openModelManageModal() {
       const picked = right.querySelector('input[name="mg-model"]:checked');
       if (!picked) { alert('请先在列表里选中一个要删除的模型。'); return; }
       const model = picked.value;
-      if (!(await uiConfirm(`确定从「${p.displayName || p.id}」删除模型 ${model}？`))) return;
+      if (!(await uiConfirm(`确定从「${provLabel(p)}」删除模型 ${model}？`))) return;
       try {
         await api('/api/providers/models', {
           method: 'DELETE',
@@ -1019,7 +1198,7 @@ function openModelManageModal() {
  */
 function openManualAddModelModal(provider, onDone) {
   const overlay = modelModalShell({
-    head: `手动添加模型 · ${esc(provider.displayName || provider.id)}`,
+    head: `手动添加模型 · ${esc(provLabel(provider))}`,
     body: `
       <div class="field"><label>模型 id（照抄服务商给的模型名，如 deepseek-chat）</label>
         <input type="text" id="mmg-id" placeholder="glm-5.3-flash / deepseek-chat / …" autocomplete="off" /></div>
@@ -1055,8 +1234,18 @@ function openProviderAddModal(onDone) {
     body: `
       <div class="field"><label>Base URL</label>
         <input type="text" id="pa-baseurl" placeholder="例如 https://api.deepseek.com/v1" style="width:100%" /></div>
+      <div class="field"><label>备注（可选）</label>
+        <input type="text" id="pa-note" placeholder="例如：中转站 · DeepSeek 专用" maxlength="40" style="width:100%" />
+        <div class="hint">只用于在供应商列表里区分，随便填。留空则显示宿主机名（如 market.frostfox.ai）。</div></div>
       <div class="field"><label>API Key</label>
         <input type="password" id="pa-apikey" placeholder="sk-..." autocomplete="new-password" style="width:100%" /></div>
+      <div class="field"><label>思考方言</label>
+        <select id="pa-dialect" style="width:100%">${dialectOptionsHtml('')}</select>
+        <div class="hint">
+          默认就是<strong>自动判定</strong>。<strong>中转站或自建网关请手动选择对应方言</strong>
+          —— 自动判定只按官方规则匹配域名与模型名，中转站判不出来，思考档位会静默失效。
+          方言语义是渠道属性：同一个中转站配了不同的 Key，就是两个供应商，可以各选各的。
+        </div></div>
       <div class="field"><label>模型 id（可先留空 —— 填完上面两项会自动弹出拉取勾选；也可直接手动填）</label>
         <div id="pa-model-rows"></div>
         <button class="btn btn-small" id="pa-add-row" style="margin-top:6px">＋ 添加一行</button></div>`,
@@ -1133,7 +1322,17 @@ function openProviderAddModal(onDone) {
     if (!apiKey) { alert('请填写 API Key（提供商必须带密钥才能测试连通性）'); return; }
     if (!models.length) { alert('请至少添加一个模型（或添加后用「拉取模型列表」勾选）'); return; }
     try {
-      await api('/api/providers', { method: 'POST', body: JSON.stringify({ baseUrl, apiKey, models }) });
+      await api('/api/providers', {
+        method: 'POST',
+        body: JSON.stringify({
+          baseUrl, apiKey, models,
+          // 备注：列表显示用（留空则回退成宿主机名）
+          note: (overlay.querySelector('#pa-note')?.value || '').trim(),
+          // 只对**新建**生效；同 baseURL 已存在时后端合并模型、不动方言
+          // （否则"给老供应商补模型"会把它调好的方言重置成默认值）。
+          thinkingDialect: overlay.querySelector('#pa-dialect').value
+        })
+      });
       closeModelModal(overlay);
       // onDone（宿主的 refresh）自己会 loadSettings + 重渲染；没有宿主就只刷数据。
       // ⚠️ 顺序很重要：先刷数据再重渲染 —— 之前 onDone 在 loadSettings 之前跑，
@@ -1395,11 +1594,12 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'chat') {
     // 信息发送配置已内联到「运行节奏」折叠卡（sc-* 字段）
     const effortRaw = val('#sc-thinking-effort', c.api?.thinkingEffort || '');
-    // 读旧值时归一（2026-10-04 档位简化，见 06-settings-render.js 注释）：
-    //   xhigh → high（值仍被 thinking.js 的映射表支持，只是 UI 不再单列）
-    //   on-noeffort → ''（该档已并入 default）
-    const effort = effortRaw === 'xhigh' ? 'high' : (effortRaw === 'on-noeffort' ? '' : effortRaw);
-    const effortValid = ['low', 'medium', 'high', 'max'].includes(effort);
+    // 旧值归一：'on-noeffort' 并入 default（''）。
+    // ⚠️ xhigh **不再**归一到 high —— 它是下拉里的正式档位（见 06-settings-render.js），
+    //    "映射到厂商合法值"由 src/thinking.js 负责（DeepSeek/OpenAI 都落到 high），
+    //    这里原样存，免得用户选了却被静默改写。
+    const effort = effortRaw === 'on-noeffort' ? '' : effortRaw;
+    const effortValid = ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort);
     // (mode, effort) 的映射：下拉现在是 6 档，语义比原来简单 ——
     //   off        → 明确关闭
     //   具体档位    → 明确开启 + 指定强度
@@ -1502,14 +1702,12 @@ async function saveConfig({ quiet = false } = {}) {
     // 只改一个开关，但仍要带上完整 api 段 —— saveConfig 是整段覆盖 api 的
     // （见上面 sec === 'api' 分支），只塞 { debugStoreRequest } 会把
     // 模型名、温度、思考档位等全部抹掉。
-    const dialect = val('#cfg-thinking-dialect', '');
+    // ⚠️ 思考方言（api.thinkingDialect）**不在这里**：2026-10-04 起它降级为
+    //    "新供应商的预选值 + 兜底"，编辑入口在「模型管理」（按供应商存
+    //    providers[].thinkingDialect）。这里靠 `...(c.api || {})` 原样带过。
     patch.api = {
       ...(c.api || {}),
-      debugStoreRequest: chk('#cfg-debug-store-request', false),
-      // 白名单校验：只接受 SELECTABLE_DIALECTS 里的值。
-      // 不校验的话，手改 config.json 塞个错值会一路传到 detectDialect。
-      thinkingDialect: ['deepseek', 'anthropic', 'qwen', 'glm', 'openai-o',
-        'gemini', 'openrouter', 'xai', 'generic'].includes(dialect) ? dialect : ''
+      debugStoreRequest: chk('#cfg-debug-store-request', false)
     };
   }
 
@@ -1531,9 +1729,9 @@ async function saveConfig({ quiet = false } = {}) {
   const data = await api('/api/config', { method: 'POST', body: bodyStr, ...(useKeepalive ? { keepalive: true } : {}) });
   state.config = data.config;
   if (!quiet) $('#model-label').textContent = `模型：${state.config.api.model || '未设置'}`;
-  // 开发者分区会展示"当前思考方言判定结果"，它由后端 statusSummary 算出。
-  // 不刷新的话，用户刚改完方言看到的还是**旧判定** —— 又是一次"改了没反应"。
-  // 失败静默：status 拿不到不影响配置已保存成功，不能因此报错打断保存。
+  // 「模型管理」里改完供应商的思考方言后要刷新 status：其中的"当前判定结果"
+  // 由后端 statusSummary 算出，不刷新的话用户看到的还是**旧判定** ——
+  // 又一次"改了没反应"。失败静默：拿不到 status 不影响配置已保存。
   if (sec === 'developer') {
     try { state.status = await api('/api/status'); } catch { /* 忽略 */ }
   }

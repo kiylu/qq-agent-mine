@@ -1,8 +1,9 @@
 // 思考参数（thinking.js）单元测试：
 // 验证 2026-10-04 的两处改动——
-//   1. **effort 与开关并列**（DeepSeek/GLM 分支）：原先 effort 被塞在 `if (on)` 里，
-//      导致"关掉思考"时 effort 永远发不出去。实测证明 effort 作用在正文投入上、
-//      与思考开关是两条独立的轴。
+//   1. **DeepSeek/GLM 分支补发 `reasoning_effort`**：修复前该分支**完全不发**这个
+//      字段，导致六档全部静默失效（无论选哪档，实际都是服务端默认 high）。
+//      现在只在**开启**时发 —— 落点条件 `e && e !== 'off'` 与 `on` 恒等，
+//      所以 `off` 档不发 effort（官方在 disabled 下未定义该参数语义）。
 //   2. **档位映射落到厂商合法值**：DeepSeek 只承认 low/high/max，
 //      本项目的 medium/xhigh 必须就近映射。
 //
@@ -15,6 +16,7 @@ import assert from 'node:assert';
 
 const { buildThinkingParams, detectDialect, resolveThinkingRequest, THINKING_EFFORTS,
   THINKING_BODY_KEYS, SELECTABLE_DIALECTS } = await import('../src/thinking.js');
+const { effectiveThinkingDialect } = await import('../src/providers.js');
 
 let passed = 0;
 function ok(name, fn) {
@@ -140,6 +142,23 @@ ok('官方域名仍走域名规则（补兜底没有破坏原有判定）', () =
   assert.match(d.reason, /域名/, '应仍由域名命中，而不是模型名');
 });
 
+ok('openai-o 覆盖到 gpt-6 及以后（此前只到 gpt-5，gpt-6 落 generic）', () => {
+  // 回归（2026-10-04）：用户切到 gpt-6-sol 走中转站时判成 generic → 思考参数一个都不发。
+  // 旧规则 /^(o[1-9](-|$)|gpt-5)/ 只认到 gpt-5。
+  for (const m of ['gpt-6-sol', 'gpt-6', 'gpt-7-turbo', 'gpt-10-x']) {
+    const d = detectDialect({ baseUrl: 'https://market.frostfox.ai/v1', model: m });
+    assert.strictEqual(d.dialect, 'openai-o', `中转站 + ${m} 应判成 openai-o`);
+  }
+});
+
+ok('放宽到 gpt-6 没有误伤 gpt-4 这类非推理模型', () => {
+  // 若写成 gpt-\\d 会把 gpt-4 也吞进来 → 给它发 reasoning_effort 会被 400
+  for (const m of ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo']) {
+    const d = detectDialect({ baseUrl: 'https://market.frostfox.ai/v1', model: m });
+    assert.strictEqual(d.dialect, 'generic', `${m} 不该被认成 openai-o`);
+  }
+});
+
 ok('手动指定优先于自动判定', () => {
   // 场景：中转站把模型名改成了判断不出来的样子，只能靠手动
   const d = detectDialect({
@@ -194,3 +213,35 @@ ok('档位=default 时无论方言如何都不发参数（default 语义不被�
 });
 
 console.log(`\n补充断言完成\n`);
+
+// ── 【7】思考方言按供应商绑定（2026-10-04）──────────────────────────────
+// 背景：方言原是全局单值（开发者菜单），切供应商时必须跑回去改，且会错配。
+// 现在存 providers[].thinkingDialect，api.thinkingDialect 降级为
+// "新供应商的预选值 + 未显式设置时的兜底"。
+// ⚠️ 传 cfg 显式参数就不碰 getConfig()，本用例保持纯离线。
+console.log('【7】思考方言按供应商绑定');
+
+ok('供应商自己的方言优先于默认值', () => {
+  const cfg = {
+    api: { provider: 'p1', thinkingDialect: 'qwen' },
+    providers: [{ id: 'p0', thinkingDialect: 'glm' }, { id: 'p1', thinkingDialect: 'deepseek' }]
+  };
+  assert.strictEqual(effectiveThinkingDialect(cfg), 'deepseek', '应取 p1 自己的值，而不是默认或别的供应商的');
+});
+
+ok('供应商没设方言 → 空串（自动判定）；**没有全局默认值兜底**', () => {
+  // 2026-10-04：全局默认值那一层被去掉了（用户反馈"设为默认值不生效、还容易误导"）。
+  // api.thinkingDialect 现在完全不参与解析，留着只是历史字段。
+  const cfg = { api: { provider: 'p1', thinkingDialect: 'glm' }, providers: [{ id: 'p1' }] };
+  assert.strictEqual(effectiveThinkingDialect(cfg), '', 'api.thinkingDialect 不该再生效');
+});
+
+ok('未选中 / 选中不存在的供应商 → 空串（不报错）', () => {
+  const none = { api: { provider: '', thinkingDialect: 'xai' }, providers: [{ id: 'p1', thinkingDialect: 'deepseek' }] };
+  assert.strictEqual(effectiveThinkingDialect(none), '');
+  const missing = { api: { provider: 'not-exist' }, providers: [] };
+  assert.strictEqual(effectiveThinkingDialect(missing), '');
+});
+
+console.log('');
+

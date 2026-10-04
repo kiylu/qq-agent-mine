@@ -80,9 +80,11 @@ export const DEFAULT_CONFIG = {
     // 对这类渠道，只有用户知道该用哪个方言。
     // 可选值见 thinking.js 的 SELECTABLE_DIALECTS；不确定就留空走自动。
     thinkingDialect: '',
-    // 思考强度档位：UI 现在只暴露 default/off/low/medium/high/max 六档
+    // 思考强度档位：UI 暴露 default/off/low/medium/high/xhigh/max 七档
     //（'default' = 空串 = 不发送任何思考参数，由模型自行决定强度，沿用原有行为）。
-    // 内部的 'xhigh' 仍被 thinking.js 接受（就近映射到 high），只为兼容旧配置。
+    // 'xhigh' 是**正式档位、不是遗留值**：多数渠道会被就近映射（DeepSeek 官方表
+    // xhigh→high、OpenAI/xAI 合法值只到 high），映射规则集中在 thinking.js；
+    // 保留它是为了跟各家的档位口径一致，将来某家真支持 xhigh 时不用再动 UI。
     //
     // ⚠️ 各家档位**不是线性对应**。实测（scripts/probe-thinking-effort.mjs，2026-10-04）：
     // DeepSeek on 组的 reasoning token 中位数 无 7588 / low 4521 / medium 5841 /

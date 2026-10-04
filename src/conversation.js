@@ -20,9 +20,15 @@
 //    4. 历史条目里不带 `raw` 这类每轮都变的字段（见 orchestrator 的剥离逻辑）。
 //
 // ⚠️ reasoning（模型的私有推理 / reasoning_content）**存在旁路数组 `reasonings` 里**，
-//    与 messages 下标一一对应，绝不混进 messages —— 它不该发回上游（会重复上传、
-//    干扰缓存），但必须留在本地：会话关闭那一刻是唯一能读到"机器人真正想过什么"
-//    的时刻（蒸馏的输入、UI 的思维链展示都靠它）。见 collectAssistantText。
+//    与 messages 下标一一对应，**默认**不混进 messages —— 但这不是"普遍不该回传"：
+//    · DeepSeek 文档要求带 `tools` 时**必须**完整回传，否则 400（不带 tools 时回传被忽略）；
+//      而**实测（2026-10-04）本渠道并不强制校验** —— 显式开 thinking + 带 tools +
+//      不回传也不报 400，故维持不回传。⚠️ 换模型 / 中转站 / API 版本需复验
+//      （scripts/probe-reasoning-passback.mjs），详见 doc/todo-2026-10-04.md。
+//    · 「回传会干扰缓存」**不成立**：前缀缓存按字节命中，尾部追加不破坏前缀；
+//      真正击穿缓存的是改写历史字节 / 工具集变化 / 切换 thinking 档位。
+//    它必须留在本地：会话关闭那一刻是唯一能读到"机器人真正想过什么"的时刻
+//    （蒸馏的输入、UI 的思维链展示都靠它）。见 collectAssistantText。
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';

@@ -19,7 +19,7 @@ import { listModels, chatCompletion, resolveApiKey, estimateCost, cacheHitRate }
 import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
 import { refreshPriceFeed, priceFeedStatus, initPriceFeed } from './price-feed.js';
 import {
-  currentProviders, setProviderKey, testAllProviders, testOneProvider,
+  currentProviders, setProviderKey, setProviderDialect, setProviderNote, testAllProviders, testOneProvider,
   testModelChat, fetchModelsFrom, upsertProvider, addModelsToProvider, removeModelFromProvider, removeProvider
 } from './providers.js';
 import { scanModelsVision, visionResults, modelImageVerdict } from './vision-scan.js';
@@ -391,6 +391,11 @@ export function createRoutes(deps) {
           id: p.id, displayName: p.displayName, baseURL: p.baseURL,
           apiKey: '', apiKeyFrom: p.apiKeyFrom || '', needsBaseUrl: p.needsBaseUrl === true,
           hasKey: !!p.apiKey, anthropicOrigin: p.anthropicOrigin === true,
+          // ⚠️ 这是**白名单**：新增的供应商字段必须在这里补一行，否则
+          //    写入成功但读不回来 —— 表现为"设了方言、一刷新又变回自动判定"
+          //    （2026-10-04 实际踩过）。
+          note: String(p.note || ''),
+          thinkingDialect: String(p.thinkingDialect || ''),
           models: p.models, modelNames: p.modelNames || {}
         }));
         return json(res, 200, { providers, source: getConfig().providersSourceYaml });
@@ -529,7 +534,12 @@ export function createRoutes(deps) {
         try {
           const body = await bodyOf(req);
           const r = upsertProvider({
-            baseUrl: String(body.baseUrl ?? ''), apiKey: String(body.apiKey ?? ''), models: body.models || []
+            baseUrl: String(body.baseUrl ?? ''),
+            apiKey: String(body.apiKey ?? ''),
+            models: body.models || [],
+            // 仅新建时生效（见 upsertProvider 注释）
+            thinkingDialect: String(body.thinkingDialect ?? ''),
+            note: String(body.note ?? '')
           });
           return json(res, 200, { ok: true, ...r, provider: sanitizeProvider(r.provider) });
         } catch (error) {
@@ -570,6 +580,28 @@ export function createRoutes(deps) {
         const updated = setProviderKey(String(body.providerId ?? ''), String(body.apiKey ?? ''));
         if (!updated) return json(res, 404, { ok: false, error: '提供商不存在' });
         return json(res, 200, { ok: true, hasKey: !!updated.apiKey });
+      }
+    },
+    {
+      // 思考方言：**按供应商**存的渠道属性（'' = 跟随默认/自动判定）。
+      // 语义与 set-key 一样是"单个字段的定点写入"，所以单独一条路由而不是
+      // 复用 POST /api/providers —— 后者是"按 baseUrl upsert"，语义不同。
+      method: 'POST', pattern: '/api/providers/dialect',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const updated = setProviderDialect(String(body.providerId ?? ''), String(body.dialect ?? ''));
+        if (!updated) return json(res, 404, { ok: false, error: '提供商不存在' });
+        return json(res, 200, { ok: true, provider: sanitizeProvider(updated) });
+      }
+    },
+    {
+      // 备注：列表显示用的标签（'' = 清空，回退自动生成的名字）。
+      method: 'POST', pattern: '/api/providers/note',
+      handler: async ({ req, res, json }) => {
+        const body = await bodyOf(req);
+        const updated = setProviderNote(String(body.providerId ?? ''), String(body.note ?? ''));
+        if (!updated) return json(res, 404, { ok: false, error: '提供商不存在' });
+        return json(res, 200, { ok: true, provider: sanitizeProvider(updated) });
       }
     },
     {

@@ -128,6 +128,62 @@ export function setProviderKey(providerId, apiKey) {
   return currentProviders().find((p) => p.id === providerId) || null;
 }
 
+/**
+ * 解析**当前选中提供商**生效的思考方言。
+ *
+ * 只有一层：`providers[].thinkingDialect`，为空即 `''` = 自动判定（按域名/模型名猜）。
+ *
+ * 为什么按供应商：方言本质是**渠道属性** —— 同一个模型走不同中转站，网关能认的
+ * 思考参数可能不同。全局单值会在切换供应商时错配，用户被迫每次跑回开发者菜单改。
+ *
+ * ⚠️ 2026-10-04：**没有"全局默认值"这一层了**。曾经试过 `api.thinkingDialect`
+ *    作为"新供应商预选值 + 兜底"，但用户反馈"设为默认值不生效、还容易误导" ——
+ *    两个地方都能设就会互相打架。现在只有供应商这一处，不选就是自动判定。
+ *
+ * ⚠️ UI 侧的等价物在「模型管理」右栏；开发者菜单**不再**有方言入口。
+ */
+export function effectiveThinkingDialect(cfg = getConfig()) {
+  const pid = String(cfg?.api?.provider ?? '').trim();
+  if (!pid) return '';
+  const p = (cfg?.providers || []).find((x) => x.id === pid);
+  return String(p?.thinkingDialect ?? '').trim();
+}
+
+/**
+ * 给指定提供商设置思考方言（`''` = 清掉自己的值、回落到默认/自动判定）。
+ * 与 setProviderKey 一样只动 providers 数组，密钥字段原样透传。
+ */
+export function setProviderDialect(providerId, dialect) {
+  const pid = String(providerId ?? '').trim();
+  const providers = currentProviders().map((p) => { const { apiKey: _ak, ...rest } = p; return { ...rest }; });
+  const p = providers.find((x) => x.id === pid);
+  if (!p) return null;
+  const d = String(dialect ?? '').trim();
+  if (d) p.thinkingDialect = d;
+  else delete p.thinkingDialect;
+  updateConfig({ providers });
+  return currentProviders().find((x) => x.id === pid) || null;
+}
+
+/**
+ * 给指定提供商设置**备注**（列表显示用；`''` = 清掉，回退成自动生成的名字）。
+ *
+ * 为什么需要：同一个中转站可以配多把 Key（= 多个供应商），自动名字只能长成
+ * `host` / `host #2`，分不出哪个是干嘛的。备注就是给人看的标签。
+ * 与 key/方言一样只动 providers 数组，密钥字段原样透传。
+ */
+export function setProviderNote(providerId, note) {
+  const pid = String(providerId ?? '').trim();
+  const providers = currentProviders().map((p) => { const { apiKey: _ak, ...rest } = p; return { ...rest }; });
+  const p = providers.find((x) => x.id === pid);
+  if (!p) return null;
+  const n = String(note ?? '').trim();
+  if (n) p.note = n;
+  else delete p.note;
+  updateConfig({ providers });
+  return currentProviders().find((x) => x.id === pid) || null;
+}
+
 // ── 手动管理提供商/模型（设置页“模型 API”） ──────────────────────────────
 
 function normalizeBaseUrl(raw) {
@@ -257,11 +313,34 @@ export async function testOneProvider({ providerId = '', baseUrl = '', apiKey = 
 }
 
 /** 新建提供商；若同 baseURL 已存在则合并模型。返回 { provider, created }。 */
-export function upsertProvider({ baseUrl, apiKey, models = [] }) {
+export function upsertProvider({ baseUrl, apiKey, models = [], thinkingDialect = '', note = '' }) {
   const base = normalizeBaseUrl(baseUrl);
   if (!base) throw new Error('Base URL 不能为空');
+  const dialect = String(thinkingDialect ?? '').trim();
+  const noteText = String(note ?? '').trim();
   const providers = currentProviders().map((p) => { const { apiKey: _ak, ...rest } = p; return { ...rest, models: [...(p.models || [])] }; });
-  const existing = providers.find((p) => normalizeBaseUrl(p.baseURL) === base);
+  // ⚠️ 不能只按 baseURL 判"是不是同一个供应商"：**同一个中转站可以配多把 Key**
+  //    （一把 DeepSeek 的、一把 OpenAI 的，各自对应不同模型），那样应该拆成两个
+  //    供应商、各存各的 Key 与模型目录。所以匹配条件是「baseURL 相同 **且** Key 兼容」：
+  //      · 已有供应商没存 Key（老配置 / 先建后填）→ 视为同一个，这次把 Key 补上
+  //      · 本次没带 Key（如"拉取模型列表"链路）→ 视为同一个，沿用已有的 Key
+  //      · 两边都有 Key 且不同 → **另建一个**（各自保留 Key 与模型）
+  const submittedKey = String(apiKey ?? '').trim();
+  const keyOfProvider = (id) => {
+    const cfg = getConfig();
+    const fromDsh = String(cfg.dshProviderKeys?.[id] ?? '').trim();
+    if (fromDsh) return fromDsh;
+    return String((cfg.providers || []).find((x) => x.id === id)?.apiKey ?? '').trim();
+  };
+  const sameBase = providers.filter((p) => normalizeBaseUrl(p.baseURL) === base);
+  // 没带 Key 时**只有唯一一家**才敢认作"就是它"；有多家就别猜（宁可新建，
+  // 也好过把模型挂到别人那把 Key 上）。
+  const existing = submittedKey
+    ? sameBase.find((p) => {
+      const cur = keyOfProvider(p.id);
+      return !cur || cur === submittedKey;
+    })
+    : (sameBase.length === 1 ? sameBase[0] : undefined);
   const entries = normalizeModelInput(models);
   if (existing) {
     for (const m of entries) {
@@ -273,6 +352,8 @@ export function upsertProvider({ baseUrl, apiKey, models = [] }) {
     //   但 currentConfig 与磁盘上都没有，重启后新增模型的显示名丢失。
     existing.modelNames = { ...(existing.modelNames || {}) };
     for (const m of entries) existing.modelNames[m.id] = m.name;
+    // 备注：只在原本是空的时候补上 —— 不覆盖用户后来在「模型管理」里手改的备注
+    if (noteText && !String(existing.note || '').trim()) existing.note = noteText;
     if (apiKey) {
       const keys = { ...(getConfig().dshProviderKeys || {}) };
       keys[existing.id] = String(apiKey).trim();
@@ -285,9 +366,18 @@ export function upsertProvider({ baseUrl, apiKey, models = [] }) {
   const id = `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const modelNames = {};
   for (const m of entries) modelNames[m.id] = m.name;
+  // 同一个 host 下已经有供应商时给 displayName 加序号 —— 否则"同中转站、不同 Key"
+  // 的两个供应商在列表里长得一模一样，根本没法区分该选哪个。
+  let displayName = hostDisplayName(base);
+  const usedNames = new Set(providers.map((p) => String(p.displayName || '')));
+  if (usedNames.has(displayName)) {
+    let n = 2;
+    while (usedNames.has(`${displayName} #${n}`)) n++;
+    displayName = `${displayName} #${n}`;
+  }
   const provider = {
     id,
-    displayName: hostDisplayName(base),
+    displayName,
     api: 'openai',
     anthropicOrigin: false,
     baseURL: base,
@@ -295,7 +385,13 @@ export function upsertProvider({ baseUrl, apiKey, models = [] }) {
     apiKeyFrom: apiKey ? 'manual' : '',
     models: entries.map((m) => m.id),
     modelNames,
-    needsBaseUrl: false
+    needsBaseUrl: false,
+    // 备注：列表显示用（provLabel 优先取它）。留空则回退 displayName。
+    ...(noteText ? { note: noteText } : {}),
+    // 思考方言：只在**新建**时写入。已存在的同 baseURL 供应商不覆盖 ——
+    // 否则"给老供应商补一个模型"会把它已经调好的方言重置回默认值。
+    // 老供应商要改方言走「模型管理」，或下面的 setProviderDialect。
+    ...(dialect ? { thinkingDialect: dialect } : {})
   };
   providers.push(provider);
   const keys = { ...(getConfig().dshProviderKeys || {}) };
