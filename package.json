@@ -6,7 +6,7 @@
   "type": "module",
   "main": "electron/main.js",
   "build": {
-    "appId": "cn.kondius.qq-agent",
+    "appId": "cn.kiylu.qq-agent",
     "productName": "QQ Agent",
     "artifactName": "QQ-Agent-${version}-Setup.exe",
     "asar": false,
