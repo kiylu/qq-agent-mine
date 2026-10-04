@@ -28,6 +28,7 @@ import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
 import { rescueUnsentReply } from './reply-rescue.js';
 import { ConversationStore, resolveSilenceMs, sameToolNames, distillBuffer, slimHistoricalMedia } from './conversation.js';
+import { logger } from './logger.js';
 
 export class Orchestrator {
   constructor({ store, memory, stickers, sender, sessions, onebot, emit = null, reminders = null, videoReader = null }) {
@@ -933,6 +934,11 @@ export class Orchestrator {
     const useBuffer = !freshReason;
 
     let messages;
+    // reasoning 旁路数组：与 messages **下标一一对应**，只存模型这一轮的私有推理
+    // （reasoning_content）。绝不混进 messages —— 它不该发回上游（重复上传 +
+    // 干扰前缀缓存），但必须留在本地给"会话关闭蒸馏"和 UI 思维链用。
+    // 历史前缀的 reasoning 从缓冲里接着往下摆（缓冲只在尾部追加，下标稳定）。
+    const reasonings = [];
     if (useBuffer) {
       // 只追加增量：【已读信息】整窗不再重发（它就在上面的上下文里，重发=双重计费）
       const deltaPrompt = buildContinuationPrompt({
@@ -952,6 +958,12 @@ export class Orchestrator {
         ...hist,
         { role: 'user', content: deltaPrompt }
       ];
+      // 旁路下标对齐：system 占 0 位、历史前缀逐条接上、末尾 user 占一位。
+      // slimHistoricalMedia 是 1:1 映射（不增删条目），所以 prevBuf.reasonings
+      // 的下标能直接平移过来。
+      reasonings.push('');
+      for (let i = 0; i < hist.length; i++) reasonings.push(prevBuf.reasonings?.[i] || '');
+      reasonings.push('');
       session.userPrompt = deltaPrompt;
       session.continuation = {
         mode: 'continuation',
@@ -977,6 +989,7 @@ export class Orchestrator {
           ? `${userPrompt}\n\n【未读信息】（主动机会）群里已经安静了一会儿。你可以主动抛一个自然的话题（像随口说的，不要像播报），也可以判断没必要说话就安静结束。`
           : userPrompt }
       ];
+      reasonings.push('', '');   // system + user，都不是 assistant
       session.continuation = { mode: 'fresh', reason: freshReason || '首次会话' };
     }
     session.promptChars = messages.reduce(
@@ -1123,7 +1136,20 @@ export class Orchestrator {
         tool_calls: finalToolCalls
       };
       messages.push(assistantEntry);
-      session.messages.push(structuredClone({ ...assistantEntry, raw: response.raw ?? null }));
+      // 私有推理走旁路（不进 messages，见上方 reasonings 声明）：
+      // llm.js 已经用 extractReasoning 把它归一化到 response.reasoning
+      // （兼容 reasoning_content / reasoning / thinking / reasoning_details 等
+      // 各家字段名），这里只负责按 messages 下标存下来。
+      const reasoningText = String(response?.reasoning || '') || '';
+      reasonings[messages.length - 1] = reasoningText;
+      // session.messages 是**给 UI 看**的（不会发回上游），所以这里可以放心带上
+      // 归一化后的 reasoning —— 会话卡片直接渲染它，用户不必再点 JSON 模式
+      // 去 raw 里翻 reasoning_content。
+      session.messages.push(structuredClone({
+        ...assistantEntry,
+        reasoning: reasoningText,
+        raw: response.raw ?? null
+      }));
       session.rounds = round + 1;
       markActivity('');
 
@@ -1347,6 +1373,9 @@ export class Orchestrator {
       messages.push(...toolResults.map(({ role, tool_call_id, name, content }) => ({ role, tool_call_id, content, name })));
       // 媒体消息跟随在全部 tool 结果之后（OpenAI 校验要求每个 tool_call 都有对应 tool 消息）
       messages.push(...imageUserMessages);
+      // 旁路数组补齐到与 messages 等长（新增的都是 tool / user，不是 assistant，
+      // 没有推理可存）。显式补空串而不是靠稀疏洞 —— 后面要按下标一一对应取值。
+      while (reasonings.length < messages.length) reasonings.push('');
       // 给 UI 的简化消息流（跳过纯 tool 结果的重复展示）
     }
 
@@ -1364,6 +1393,9 @@ export class Orchestrator {
           systemPrompt,
           toolNames: toolIds,
           messages: contCfg.slimMedia === false ? toSave : slimHistoricalMedia(toSave),
+          // 旁路同步去掉 system 那一位，保持与 messages 下标一一对应。
+          // slimHistoricalMedia 是 1:1 映射，不影响对齐。
+          reasonings: reasonings.slice(1),
           turns: Number(session.continuation?.turns) || 1
         });
       } catch (error) {
@@ -1455,31 +1487,54 @@ export class Orchestrator {
    * 状态也不会丢 —— 它本来就是为了"下一次重开"准备的。
    *
    * 用 running 集合防止同一会话并发蒸馏（多次触发撞在一起时只跑一次）。
+   *
+   * ⚠️ 日志一律走 logger（2026-10-04）：原先这里用裸 console.log/warn，
+   * 而 logger 是"单向流向 console"的 —— 裸 console 既进不了 UI 日志页签、
+   * 也不落 data/logs/，等于蒸馏链路在服务器上完全黑盒（点按钮没反馈、
+   * 排查只能靠猜 _self.json 是否存在）。改成 logger 后**无论成败都有一条**，
+   * 落盘 + 控制台日志页都能看到。
    */
   #distillAndClose(chatKey, buffer, reason) {
     this.conversation.clear(chatKey, { archive: true, reason });
     const cfg = getConfig();
     const contCfg = cfg.store?.continuation || {};
-    if (contCfg.distillOnClose === false) return;
-    if (this.distilling.has(chatKey)) return;
+    const label = reason || '会话关闭';
+    if (contCfg.distillOnClose === false) {
+      logger.info('orchestrator', `会话关闭蒸馏已跳过（${label}）：配置 distillOnClose=false @ ${chatKey}`);
+      return;
+    }
+    if (this.distilling.has(chatKey)) {
+      logger.info('orchestrator', `会话关闭蒸馏已跳过（${label}）：该会话正在蒸馏中 @ ${chatKey}`);
+      return;
+    }
     const messages = Array.isArray(buffer?.messages) ? buffer.messages : [];
-    if (!messages.length) return;
+    const reasonings = Array.isArray(buffer?.reasonings) ? buffer.reasonings : null;
+    if (!messages.length) {
+      logger.info('orchestrator', `会话关闭蒸馏已跳过（${label}）：会话缓冲里没有消息 @ ${chatKey}`);
+      return;
+    }
     this.distilling.add(chatKey);
     const maxChars = Math.max(1000, Number(contCfg.distillMaxChars) || 12000);
     distillBuffer({
       memory: this.memory,
       chatKey,
       messages,
+      reasonings,
       maxChars,
       callModel: (args) => chatCompletionWithRetry(args, 1)
-    }).then((written) => {
-      if (written?.length) {
-        console.log(`[orchestrator] 会话关闭蒸馏（${reason || '关闭'}）：写入自身状态 ${written.length} 条 @ ${chatKey}`);
-        this.emit('self-distilled', { chatKey, count: written.length, items: written });
+    }).then((res) => {
+      // distillBuffer 现在返回结果摘要（status/reason/cotChars/itemCount/items）。
+      // 每条分支都落日志 —— 用户点「重开并蒸馏」后必须能在日志里看到结果。
+      if (res?.status === 'ok') {
+        logger.info('orchestrator', `会话关闭蒸馏完成（${label}）：写入自身状态 ${res.itemCount} 条 @ ${chatKey}`, res.items);
+        this.emit('self-distilled', { chatKey, count: res.itemCount, items: res.items });
+        return;
       }
+      // 未写入：说清是"没素材"还是"模型认为没东西"，二者含义完全不同
+      logger.info('orchestrator', `会话关闭蒸馏完成但未写入（${label}）：${res?.reason || res?.status || '未知原因'} @ ${chatKey}`);
     }).catch((error) => {
       // 蒸馏失败不影响任何主流程：最多是这次没归档
-      console.warn('[orchestrator] 会话关闭蒸馏失败:', error?.message ?? error);
+      logger.warn('orchestrator', `会话关闭蒸馏失败（${label}）：${error?.message ?? error} @ ${chatKey}`);
     }).finally(() => {
       this.distilling.delete(chatKey);
     });

@@ -51,6 +51,68 @@ check('落盘：新实例（空缓存）仍能读到 —— 重启可续的关�
   assert.equal(b.messages.length, 2);
 });
 
+// ── reasonings 旁路（2026-10-04）────────────────────────────────────
+// 模型的私有推理（reasoning_content）存在与 messages 下标一一对应的旁路数组里：
+// 绝不能混进 messages（那是发回上游的数组，多一个字段就重复上传 + 破坏前缀缓存），
+// 但必须落盘（重启后蒸馏仍要读它）。
+check('reasonings：与 messages 等长、下标对齐、落盘后不丢', () => {
+  const s = new ConversationStore();
+  const messages = [
+    { role: 'user', content: '你是谁' },
+    { role: 'assistant', content: null, tool_calls: [{ function: { name: 'send_message', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: 'ok' }
+  ];
+  s.save('group:150', {
+    systemPrompt: 'SYS', toolNames: ['send_message'],
+    messages, reasonings: ['', '他又在测我'], turns: 1
+  });
+  const b = s.get('group:150');
+  assert.equal(b.reasonings.length, b.messages.length, '长度必须与 messages 一致');
+  assert.equal(b.reasonings[1], '他又在测我');
+  assert.ok(!('reasoning' in b.messages[1]), 'messages 里绝不能混入 reasoning 字段');
+
+  const s2 = new ConversationStore();
+  const b2 = s2.get('group:150');
+  assert.equal(b2.reasonings.length, 3, '重启后长度仍对齐');
+  assert.equal(b2.reasonings[1], '他又在测我', '重启后 reasoning 不丢');
+});
+
+check('reasonings：缺省/长度不符时补空，绝不错位', () => {
+  const s = new ConversationStore();
+  s.save('group:151', {
+    systemPrompt: 'S', toolNames: [],
+    messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }], turns: 1
+  });
+  const b = s.get('group:151');
+  assert.equal(b.reasonings.length, 2, '未传时也要补齐到等长');
+  assert.deepEqual(b.reasonings, ['', '']);
+
+  s.save('group:152', {
+    systemPrompt: 'S', toolNames: [],
+    messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'tool', content: 'c' }],
+    reasonings: ['', '只给了一条，但消息有三条'], turns: 1
+  });
+  const b2 = s.get('group:152');
+  assert.equal(b2.reasonings.length, 3, '短数组应被补齐');
+  assert.equal(b2.reasonings[1], '只给了一条，但消息有三条');
+  assert.equal(b2.reasonings[2], '', '缺失位补空');
+});
+
+check('reasonings：超长被裁剪（逐条 + 总量），只丢最早的', () => {
+  const s = new ConversationStore();
+  // 总量阈值 48000：13 条 × 逐条截到 4000 = 52000 → 必须丢掉最早的 1 条。
+  const n = 13;
+  const messages = Array.from({ length: n }, (_, i) => ({ role: 'assistant', content: String(i) }));
+  const reasonings = messages.map((_, i) => `${i}`.repeat(9000));
+  s.save('group:153', { systemPrompt: 'S', toolNames: [], messages, reasonings, turns: 1 });
+  const b = s.get('group:153');
+  assert.ok(b.reasonings.every((r) => r.length <= 4000), `逐条应截到 4000，实际 ${b.reasonings.map((r) => r.length)}`);
+  assert.equal(b.reasonings[0], '', '总量超限时最早那条应被丢掉');
+  assert.equal(b.reasonings[1], '1'.repeat(4000), '紧随其后的一条应保留');
+  // 源串是 `${i}`.repeat(9000)，逐条截到 4000 → 取前 4000 个字符
+  assert.equal(b.reasonings[n - 1], `${n - 1}`.repeat(9000).slice(0, 4000), '最近那条必须保留');
+});
+
 check('save 二次调用会沿用 startedAt（会话开始时间不漂移）', () => {
   const s = new ConversationStore();
   const first = s.get('group:100');

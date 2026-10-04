@@ -208,6 +208,66 @@ await check('思维链接口在没有缓冲时返回空数组（不报错）', a
   assert.equal(r.data.turns, 0);
 });
 
+// ═══ 场景 8½：reasoning_content 旁路（2026-10-04）═══════════════════
+// 真实运行的模型（deepseek-flash 等）**正文 content 恒为空**，思考全在
+// reasoning_content。这条锁住三个不变量：
+//   1. reasoning 被 orchestrator 落进缓冲旁路（reasonings[]），/thoughts 能取到；
+//   2. 绝不混进发给上游的 messages（否则重复上传 + 破坏前缀缓存）；
+//   3. 走 continuation 时历史 reasoning 的下标不错位。
+await check('reasoning_content 落进旁路、不污染发给模型的 messages', async () => {
+  // ⚠️ 脚本必须**按下标**写：mock 用 state.script[requests.length] 取，
+  //    前面几个用例已把 requests 计数推高，push 到队尾会错位取不到。
+  const at = reqCount();
+  llm.state.script[at] = {
+    content: null,
+    reasoning: '他又在测我了，先想想这次怎么答。',
+    toolCalls: [{ name: 'send_message', args: { messages: ['在的'] } }]
+  };
+  llm.state.script[at + 1] = {
+    content: null,
+    reasoning: '发完了，这轮可以收尾。',
+    toolCalls: [{ name: 'finish', args: {} }]
+  };
+  const before = reqCount();
+  pushGroupMsg(111, '张三', '@覆盖Bot 带推理的一轮', 70040);
+  await waitFor(() => reqCount() >= before + 2, 8000, '触发带 reasoning 的两轮');
+  await sleep(500);
+
+  const r = await request('GET', '/api/chats/group_456/thoughts');
+  const msgs = r.data.messages || [];
+  const rs = r.data.reasonings || [];
+  assert.equal(rs.length, msgs.length, `reasonings 应与 messages 等长：${rs.length} vs ${msgs.length}`);
+  assert.ok(rs.some((x) => x && x.includes('他又在测我了')), '缓冲旁路里应有 reasoning 原文');
+
+  // 不变量 2：发给上游的 messages 里绝不能出现 reasoning（content 为 null 也算）
+  for (const req of llm.state.requests) {
+    for (const m of req.messages || []) {
+      assert.ok(!('reasoning' in m) && !('reasoning_content' in m) && !('reasoning_details' in m),
+        '发给上游的 messages 里绝不能带 reasoning 字段');
+      assert.ok(!(typeof m.content === 'string' && m.content.includes('他又在测我了')),
+        'reasoning 原文绝不能出现在 content 里');
+    }
+  }
+});
+
+await check('continuation 轮：历史 reasoning 的下标仍然对齐', async () => {
+  // 紧接触发 → continuation：上一轮的 reasoning 必须原位接上（不能整体左移一位）
+  llm.state.script[reqCount()] = { content: '好', reasoning: '这轮随便回一下。' };
+  const before = reqCount();
+  pushGroupMsg(111, '张三', '@覆盖Bot 再来一句', 70041);
+  await waitFor(() => reqCount() > before, 8000, 'continuation 轮');
+  await sleep(500);
+
+  const r = await request('GET', '/api/chats/group_456/thoughts');
+  const msgs = r.data.messages || [];
+  const rs = r.data.reasonings || [];
+  assert.equal(rs.length, msgs.length, '长度仍应一致');
+  const first = msgs.findIndex((m) => m.role === 'assistant');
+  assert.ok(first >= 0, '应能找到 assistant 条目');
+  assert.ok(rs[first] && rs[first].length > 0,
+    `首条 assistant 的 reasoning 不应错位（实际 ${JSON.stringify(rs[first] || '')}）`);
+});
+
 // ═══ 场景 9：外部技能对会话延续的影响（兼容性回归护栏）═══
 //
 // 已实测确认的既有行为：

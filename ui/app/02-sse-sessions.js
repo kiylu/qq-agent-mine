@@ -648,7 +648,7 @@ function renderSessionDetail(s) {
 
   html.push('<div class="msg-flow">');
   if (!jsonMode) {
-    for (const item of s.messages || []) {
+    for (const [msgsIndex, item] of (s.messages || []).entries()) {
       if (item.toolCall) {
         const meta = (typeof TOOL_META === 'object' && TOOL_META) ? TOOL_META[item.toolCall.name] : null;
         const ico = meta?.icon || '⚒';
@@ -679,15 +679,29 @@ function renderSessionDetail(s) {
           </details>`));
       } else if (item.role === 'assistant') {
         const text = typeof item.content === 'string' ? item.content : '';
-        if (item.tool_calls && item.tool_calls.length && !text.trim()) continue; // 纯工具调用轮，卡片已展示
+        // reasoning_content（模型的私有推理）。后端已用 extractReasoning 归一化到
+        // item.reasoning —— 兼容 deepseek/qwen/gemini/openrouter 各家字段名。
+        // 旧存档（改动前落盘的）没有这个字段，回退到 raw 里刨。
+        const reasoning = typeof item.reasoning === 'string' && item.reasoning
+          ? item.reasoning
+          : String(item.raw?.choices?.[0]?.message?.reasoning_content || '');
+        // 纯工具调用轮：正文空、工具卡片已单独展示 —— 但**有推理就必须显示**。
+        // 原来的 `!text.trim() → continue` 把这轮整个跳掉，恰恰跳掉的正是
+        // reasoning_content 存在的轮次（工具调用轮正文恒为空）。
+        const hasCalls = !!(item.tool_calls && item.tool_calls.length);
+        if (hasCalls && !text.trim() && !reasoning.trim()) continue;
+        const inner = `${reasoning.trim()
+          ? `<div class="think-reasoning"><div class="think-reasoning-tag">🧠 推理（reasoning_content）· ${reasoning.length} 字符</div>${esc(reasoning.trim())}</div>`
+          : ''}${text.trim() ? esc(text) : (reasoning.trim() ? '' : '（无文本输出，仅调用工具）')}`;
         html.push(squeezeHtml(`
-          <details class="collapsible tool-flow think-flow">
+          <details class="collapsible tool-flow think-flow" data-key="think-${msgsIndex}">
             <summary>
               <span class="tool-ico">💭</span>
               <span class="tool-name-flow">思考</span>
               <span class="tool-label">不发送</span>
+              ${reasoning.trim() ? `<span class="badge ok">${reasoning.length} 字符推理</span>` : ''}
             </summary>
-            <div class="coll-body think-body">${esc(text || '（无文本输出，仅调用工具）')}</div>
+            <div class="coll-body think-body">${inner}</div>
           </details>`));
       }
     }
@@ -737,10 +751,18 @@ function renderSessionDetail(s) {
   html.push('</div>');
 
   // 折叠面板的展开状态也要保留（否则每次刷新"系统提示"都被折回去）
+  // ⚠️ 优先按 data-key 记（稳定身份），没有 key 的退回序号 —— 纯工具调用轮
+  //    现在也会渲染出"思考"卡（因为它带 reasoning_content），details 的**数量**
+  //    会变，只按序号记会把状态贴到别的面板上。
   const openStates = new Map();
-  detail.querySelectorAll('details.collapsible').forEach((d, i) => openStates.set(i, d.open));
+  detail.querySelectorAll('details.collapsible').forEach((d, i) => {
+    openStates.set(d.dataset.key || `#${i}`, d.open);
+  });
   detail.innerHTML = html.join('');
-  detail.querySelectorAll('details.collapsible').forEach((d, i) => { if (openStates.has(i)) d.open = openStates.get(i); });
+  detail.querySelectorAll('details.collapsible').forEach((d, i) => {
+    const k = d.dataset.key || `#${i}`;
+    if (openStates.has(k)) d.open = openStates.get(k);
+  });
   // 切换会话（首次渲染）时详情整体淡入；轮询/SSE 的原地刷新不播，避免运行中闪烁
   if (firstRender) uiEnter(detail);
   const jsonBtn = $('#json-mode-btn');

@@ -18,6 +18,11 @@
 //    2. 工具集不变（工具定义在请求体里排在 messages 之前，一变全废）；
 //    3. 只在数组尾部追加，绝不改写历史字节；
 //    4. 历史条目里不带 `raw` 这类每轮都变的字段（见 orchestrator 的剥离逻辑）。
+//
+// ⚠️ reasoning（模型的私有推理 / reasoning_content）**存在旁路数组 `reasonings` 里**，
+//    与 messages 下标一一对应，绝不混进 messages —— 它不该发回上游（会重复上传、
+//    干扰缓存），但必须留在本地：会话关闭那一刻是唯一能读到"机器人真正想过什么"
+//    的时刻（蒸馏的输入、UI 的思维链展示都靠它）。见 collectAssistantText。
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
@@ -34,6 +39,12 @@ const ARCHIVE_KEEP = 10;
 const STALE_MS = 24 * 60 * 60 * 1000;
 // sweep 的最小间隔（避免每轮都 readdir）。
 const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+// 单条 reasoning 的存储上限（字符）。模型的私有推理可以非常长（甚至上万字），
+// 而蒸馏预算默认才 12000 字符 —— 逐条截断既够用，又防止缓冲文件无限膨胀。
+const REASONING_PER_MSG_MAX = 4000;
+// 整个缓冲里 reasoning 的总量上限（字符）。超了从**最早**的开始丢 —— 越近的
+// 思考越贴近"这段会话刚发生了什么"，对关闭蒸馏越有价值。
+const REASONING_TOTAL_MAX = 48000;
 
 /**
  * 各家前缀缓存的 TTL 口径（2026-10 查证），单位：分钟。
@@ -97,6 +108,40 @@ function countChars(messages) {
   return n;
 }
 
+/**
+ * 规整 reasonings 旁路数组：与 messages **下标一一对应**，长度严格相同。
+ * 对不齐就毫无意义（缓冲里只会尾部追加，位置是稳定的），所以宁可补空也不留错位。
+ * 非字符串一律视为空。
+ */
+function normalizeReasonings(reasonings, len) {
+  const n = Math.max(0, Number(len) || 0);
+  const out = new Array(n).fill('');
+  if (!Array.isArray(reasonings)) return out;
+  for (let i = 0; i < Math.min(n, reasonings.length); i++) {
+    const v = reasonings[i];
+    if (typeof v === 'string' && v) out[i] = v;
+  }
+  return out;
+}
+
+/**
+ * 裁剪 reasonings：逐条截到 REASONING_PER_MSG_MAX，总量超 REASONING_TOTAL_MAX
+ * 时从最早的开始丢。只留尾部 —— 越近的思考越贴近"这段会话刚发生了什么"。
+ */
+function trimReasonings(reasonings, len) {
+  const out = normalizeReasonings(reasonings, len);
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].length > REASONING_PER_MSG_MAX) out[i] = out[i].slice(0, REASONING_PER_MSG_MAX);
+  }
+  let total = 0;
+  for (let i = 0; i < out.length; i++) total += out[i].length;
+  for (let i = 0; i < out.length && total > REASONING_TOTAL_MAX; i++) {
+    total -= out[i].length;
+    out[i] = '';
+  }
+  return out;
+}
+
 export class ConversationStore {
   constructor() {
     /** chatKey -> buffer */
@@ -114,6 +159,7 @@ export class ConversationStore {
         systemPrompt: String(raw.systemPrompt ?? ''),
         toolNames: Array.isArray(raw.toolNames) ? raw.toolNames.map(String) : [],
         messages: raw.messages,
+        reasonings: normalizeReasonings(raw.reasonings, raw.messages.length),
         turns: Number(raw.turns) || 0,
         chars: Number(raw.chars) || countChars(raw.messages),
         startedAt: Number(raw.startedAt) || 0,
@@ -141,19 +187,22 @@ export class ConversationStore {
    * @param {string} p.systemPrompt  本轮实际使用的系统提示（下一轮要逐字节比对）
    * @param {string[]} p.toolNames   本轮实际可用的工具 id 列表
    * @param {Array} p.messages       **不含 system** 的消息序列（已剥 raw）
+   * @param {Array} [p.reasonings]   与 messages 下标对应的私有推理（旁路，不发上游）
    * @param {number} p.turns         累计的用户轮数
    */
-  save(chatKey, { systemPrompt, toolNames, messages, turns }) {
+  save(chatKey, { systemPrompt, toolNames, messages, reasonings, turns }) {
     const key = String(chatKey ?? '');
     if (!key) return null;
     const prev = this.cache.get(key) || this.#load(key);
+    const msgs = Array.isArray(messages) ? messages : [];
     const buf = {
       chatKey: key,
       systemPrompt: String(systemPrompt ?? ''),
       toolNames: Array.isArray(toolNames) ? toolNames.map(String) : [],
-      messages: Array.isArray(messages) ? messages : [],
+      messages: msgs,
+      reasonings: trimReasonings(reasonings, msgs.length),
       turns: Math.max(0, Number(turns) || 0),
-      chars: countChars(messages),
+      chars: countChars(msgs),
       startedAt: Number(prev?.startedAt) || Date.now(),
       lastTurnAt: Date.now()
     };
@@ -368,22 +417,45 @@ export function slimHistoricalMedia(messages) {
 // 不蒸馏 = 下次重开时它把自己的谜底忘了。
 
 /**
- * 从会话缓冲里抽出 assistant 的"思考/正文"文本（即机器人自己的私有推理）。
- * 这是蒸馏的输入。工具调用参数**不算**思考内容，跳过。
+ * 从会话缓冲里抽出 assistant 的"私有推理"文本 —— 这是蒸馏的输入。
+ *
+ * ⚠️ 素材来源的优先级（2026-10-04 修正）：
+ *   很多模型（deepseek 系、qwen thinking、gemini 等）**正文 content 是空的**，
+ *   真正的思考在 reasoning_content 里。而 content 为空恰恰也是"这一轮只调了
+ *   工具"的常态 —— 于是原实现（只读 content）在真实运行中几乎恒返回空串，
+ *   蒸馏永远产不出东西（用户点「重开并蒸馏」后什么都没有）。
+ *   现在改为：reasoning 优先，content 作为补充（两者都有时都收）。
+ *
+ * 工具调用参数**不算**思考内容，仍然跳过。
+ *
+ * @param {Array} messages 会话缓冲的消息序列
+ * @param {object} [opts]
+ * @param {Array} [opts.reasonings] 与 messages 下标对应的 reasoning（旁路数组）
+ * @param {number} [opts.maxChars]   字符预算
  */
-export function collectAssistantText(messages, { maxChars = 12000 } = {}) {
+export function collectAssistantText(messages, { maxChars = 12000, reasonings = null } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
   const chunks = [];
   let total = 0;
-  for (const m of messages || []) {
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
     if (m?.role !== 'assistant') continue;
+    // 兼容两种来源：旁路数组优先，其次条目自带（raw 里嵌套的老形态也能取到）。
+    const r = (Array.isArray(reasonings) ? reasonings[i] : null)
+      ?? m?.reasoning_content
+      ?? m?.reasoning
+      ?? m?.raw?.choices?.[0]?.message?.reasoning_content
+      ?? '';
     const c = m?.content;
-    const text = typeof c === 'string'
+    const body = typeof c === 'string'
       ? c
       : Array.isArray(c)
         ? c.filter((p) => p && typeof p.text === 'string').map((p) => p.text).join('')
         : '';
-    const t = String(text ?? '').trim();
-    if (!t) continue;
+    // reasoning 在前、正文在后：思考是主体，正文常只是它决定"说出口"的部分。
+    const parts = [String(r ?? '').trim(), String(body ?? '').trim()].filter(Boolean);
+    if (!parts.length) continue;
+    const t = parts.join('\n');
     chunks.push(t);
     total += t.length;
     if (total >= maxChars) break;
@@ -440,19 +512,40 @@ export function parseDistillResult(text, { max = 5 } = {}) {
 
 /**
  * 蒸馏一次并写入自身记忆。
+ *
+ * ⚠️ 返回值不是 string[]，而是一个**可观测的结果摘要**（2026-10-04）：
+ *   之前返回的 string[] 无法区分"蒸馏跑了但没提炼出东西"和"压根没跑"——
+ *   而这两种在 UI 上长得一模一样（都没有 _self.json），用户点了"重开并蒸馏"
+ *   之后完全看不到反馈。改成 summary 后调用方能拿到明确原因并写进日志。
+ *   为兼容旧调用方，summary 自带 items（就是原来的 string[]）。
+ *
  * @param {object} p
  * @param {object} p.memory       MemoryStore（写 appendSelf）
  * @param {string} p.chatKey
  * @param {Array}  p.messages     会话缓冲的消息序列
+ * @param {Array}  [p.reasonings] 与 messages 下标对应的私有推理（缓冲的旁路数组）
  * @param {Function} p.callModel  形如 (args) => Promise<{message,usage}>，通常传 chatCompletionWithRetry
  * @param {object} [p.api]        渠道配置（baseUrl/model，供日志）
  * @param {number} [p.maxChars]   蒸馏输入字符预算
- * @returns {Promise<string[]>}   实际写入的条目
+ * @returns {Promise<{
+ *   status: 'skipped-no-buffer' | 'skipped-empty-cot' | 'skipped-no-content' | 'ok',
+ *   reason: string,
+ *   cotChars: number,
+ *   itemCount: number,
+ *   items: string[]
+ * }>}
  */
-export async function distillBuffer({ memory, chatKey, messages, callModel, maxChars = 12000 }) {
-  if (!memory || !chatKey || typeof callModel !== 'function') return [];
-  const cot = collectAssistantText(messages, { maxChars });
-  if (!cot) return [];
+export async function distillBuffer({ memory, chatKey, messages, reasonings, callModel, maxChars = 12000 }) {
+  const no = (status, reason, cotChars = 0) => withItems({ status, reason, cotChars, itemCount: 0, items: [] });
+  if (!memory || !chatKey || typeof callModel !== 'function') {
+    return no('skipped-no-buffer', '参数不全（memory/chatKey/callModel 缺失）');
+  }
+  const cot = collectAssistantText(messages, { maxChars, reasonings });
+  // 素材为空 → 显式回报原因，绝不静默 return（用户点了按钮必须能在日志里看到结果）。
+  // 真实原因通常是"这条链路上的模型不产 reasoning_content"（正文空、思考也没有）。
+  if (!cot) {
+    return no('skipped-empty-cot', '这段会话里既没有 assistant 正文、也没有 reasoning_content（模型未产出私有推理），无可提炼素材');
+  }
   const r = await callModel({
     messages: [
       { role: 'system', content: DISTILL_SYSTEM_PROMPT },
@@ -468,5 +561,18 @@ export async function distillBuffer({ memory, chatKey, messages, callModel, maxC
     const e = memory.appendSelf(chatKey, content);
     if (e) written.push(e.content);
   }
-  return written;
+  // 模型跑了但认为"没有值得记住的东西"——这是正常结果，不是错误。
+  if (!written.length) return withItems(no('skipped-no-content', '蒸馏模型认为这段对话没有值得跨轮记住的内容', cot.length));
+  return withItems({ status: 'ok', reason: '', cotChars: cot.length, itemCount: written.length, items: written });
+
+  /**
+   * 兼容旧的 string[] 调用方：把 summary 伪装成数组（带 .status/.reason 等属性）。
+   * 老代码 `written.length` / `for (const c of written)` 照常可用，新代码读属性拿原因。
+   * 避免为了加可观测性而改所有调用点（含既有测试）。
+   */
+  function withItems(summary) {
+    const arr = summary.items.slice();
+    Object.assign(arr, summary);
+    return arr;
+  }
 }

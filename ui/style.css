@@ -651,6 +651,17 @@ span.unread {
   font-size: 12.5px; line-height: 1.7; color: var(--tx2);
   white-space: pre-wrap; word-break: break-word;
 }
+/* 私有推理（reasoning_content）：与"最终说出口的正文"视觉上分开一段，
+   否则两者混在一块看不出哪段是思考、哪段是要发到群里的。 */
+.think-reasoning {
+  white-space: pre-wrap; word-break: break-word;
+  color: var(--tx3); font-size: 12px; line-height: 1.75;
+}
+.think-reasoning-tag {
+  white-space: normal; display: block; margin-bottom: 6px;
+  font-size: 11px; color: var(--tx3); opacity: .8;
+  font-family: var(--font-mono);
+}
 .error-body {
   font-size: 12.5px; line-height: 1.7; color: var(--err);
   white-space: pre-wrap; word-break: break-word;

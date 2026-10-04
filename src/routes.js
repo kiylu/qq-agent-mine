@@ -1578,17 +1578,24 @@ export function createRoutes(deps) {
       // 思维链原文（记忆页「查看思维链」用）：返回活跃缓冲里的完整 messages
       // —— 这就是机器人跨轮保留的"自己想过什么"（含 tool_calls / 工具结果）。
       // 只读、不改动缓冲；没有缓冲（已关闭/从未开始）返回 { messages: [] }。
+      // reasonings 与 messages 下标一一对应：模型的私有推理（reasoning_content）。
+      // ⚠️ 它是**旁路**数据，不在 messages 里 —— 因为绝不能发回上游（会重复上传、
+      //    破坏前缀缓存），但 UI 要展示、关闭蒸馏也要读它。
       method: 'GET', pattern: /^\/api\/chats\/(group|private)_(\d+)\/thoughts$/,
       handler: async ({ res, json, match }) => {
         const chatKey = `${match[1]}:${match[2]}`;
         const buf = orchestrator.conversation.get(chatKey);
+        const msgs = Array.isArray(buf?.messages) ? buf.messages : [];
         return json(res, 200, {
           chatKey,
           turns: Number(buf?.turns) || 0,
           chars: Number(buf?.chars) || 0,
           startedAt: Number(buf?.startedAt) || 0,
           lastTurnAt: Number(buf?.lastTurnAt) || 0,
-          messages: Array.isArray(buf?.messages) ? buf.messages : []
+          messages: msgs,
+          reasonings: Array.isArray(buf?.reasonings)
+            ? buf.reasonings.map((r) => (typeof r === 'string' ? r : ''))
+            : new Array(msgs.length).fill('')
         });
       }
     },

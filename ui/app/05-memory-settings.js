@@ -319,13 +319,18 @@ async function loadMemoryDetail(chatKey) {
 
 /**
  * 渲染思维链（记忆页「🧠 查看思维链」展开时调用）。
- * 数据源 = 活跃缓冲的 messages（机器人跨轮保留的"自己想过什么"）。
+ * 数据源 = 活跃缓冲的 messages（机器人跨轮保留的"自己想过什么"）
+ *          + reasonings（与 messages 下标一一对应的私有推理）。
  * 与「会话详情」的区别：会话详情是**单次触发**的记录，这里是**跨轮连续**的思考链。
  *
  * 消息形态（与 LLM 请求一致）：
  *   - user      → 本轮输入（提示词，通常是【角色设定】【已读信息】等长文本）
  *   - assistant → 机器人的思考文本 + 可能的 tool_calls（纯工具调用时 content 为空）
  *   - tool      → 工具返回结果（JSON 文本）
+ *
+ * ⚠️ reasoning_content 单独渲染成一节「推理」（reasoningHtml）：很多模型
+ *    （deepseek 系、qwen thinking 等）正文 content 恒为空，真正的思考在
+ *    reasoning_content 里 —— 不单独展示的话整个折叠框看起来全是空的。
  */
 function renderThoughts(bodyEl, hintEl, data) {
   const msgs = Array.isArray(data.messages) ? data.messages : [];
@@ -334,6 +339,7 @@ function renderThoughts(bodyEl, hintEl, data) {
     if (hintEl) hintEl.textContent = '暂无';
     return;
   }
+  const reasonings = Array.isArray(data.reasonings) ? data.reasonings : [];
   if (hintEl) hintEl.textContent = `延续 ${data.turns || 0} 轮 · ${msgs.length} 条消息 · ${fmtChars(data.chars)}`;
 
   const kindOf = (m) => {
@@ -350,6 +356,11 @@ function renderThoughts(bodyEl, hintEl, data) {
     const kind = kindOf(m);
     const text = typeof m.content === 'string' ? m.content : (m.content == null ? '' : JSON.stringify(m.content, null, 1));
     const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+    // 私有推理（reasoning_content）：只在 assistant 位有，且下标与 messages 对齐。
+    const reasoning = kind === 'think' && typeof reasonings[i] === 'string' ? reasonings[i] : '';
+    const reasoningHtml = reasoning.trim()
+      ? `<div class="think-reasoning"><div class="think-reasoning-tag">🧠 推理（reasoning_content）· ${fmtChars(reasoning.length)}</div>${esc(reasoning.trim())}</div>`
+      : '';
     // 工具调用卡片（assistant 里的 tool_calls，逐个渲染参数）
     const callsHtml = calls.map((c) => {
       const meta = (typeof TOOL_META === 'object' && TOOL_META) ? TOOL_META[c.function?.name || c.name] : null;
@@ -368,14 +379,19 @@ function renderThoughts(bodyEl, hintEl, data) {
     // ⚠️ .coll-body 是 white-space:pre-wrap：任何夹在标签之间的换行/缩进都会被
     //    当成真实空行渲染出来（鼠标能选中），表现为"卡片内容上下各有一段留白"。
     //    所以：① 文本自身首尾空白要裁掉；② 拼好的片段统一走 squeezeHtml 压掉标签间空白。
-    const bodyInner = `${text.trim() ? esc(text.replace(/^\s+|\s+$/g, '')) : ''}${callsHtml}`;
+    const bodyInner = `${reasoningHtml}${text.trim() ? esc(text.replace(/^\s+|\s+$/g, '')) : ''}${callsHtml}`;
+    // 有推理但正文为空时照样保留这一条（原来会因 content 空而看起来什么都没有）
+    const badge = reasoning.trim()
+      ? `<span class="badge ok">${fmtChars(reasoning.length)} 推理</span>`
+      : '';
     return squeezeHtml(`
-      <details class="collapsible mem-thought mem-thought-${kind}">
+      <details class="collapsible mem-thought mem-thought-${kind}" data-key="thought-${i}">
         <summary>
           <span class="tool-ico">${roleIcon[kind]}</span>
           <span class="tool-name-flow">${roleLabel[kind]}</span>
           <span class="tool-label">#${i + 1}</span>
           ${kind === 'user' ? `<span class="tool-label">${fmtChars(text.length)}</span>` : ''}
+          ${badge}
           ${calls.length ? `<span class="badge ok">${calls.length} 次工具调用</span>` : ''}
         </summary>
         <div class="coll-body think-body">${bodyInner}</div>

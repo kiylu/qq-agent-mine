@@ -282,6 +282,10 @@ export function createMockLLM() {
       if (!scripted) scripted = { content: '（默认：无动作）' };
       if (scripted.delayMs) await sleep(scripted.delayMs);
       const message = { role: 'assistant', content: scripted.content ?? null };
+      // scripted.reasoning 模拟 deepseek/qwen/gemini 等的 reasoning_content：
+      // **正文 content 为空、思考全在 reasoning 字段** —— 这是真实运行的常态，
+      // 也是"蒸馏读不到素材"和"UI 看不到思考"的根源（见 conversation.js 旁路设计）。
+      if (scripted.reasoning) message.reasoning_content = scripted.reasoning;
       if (scripted.toolCalls) {
         message.tool_calls = scripted.toolCalls.map((tc, i) => ({
           id: `call_${step}_${i}`,

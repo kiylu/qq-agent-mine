@@ -116,6 +116,40 @@ await check('collectAssistantText：遵守 maxChars 预算', () => {
   assert.equal(t.length, 1000, '应截断到预算');
 });
 
+// ── reasoning_content（2026-10-04）：真实运行的模型正文恒为空、思考全在
+//    reasoning_content 里。只读 content 时 collectAssistantText 恒返回空串，
+//    蒸馏必然产不出东西（用户点「重开并蒸馏」后什么都没有）。
+await check('collectAssistantText：reasoning_content 是主要素材来源', () => {
+  const msgs = [
+    { role: 'user', content: '你是谁' },
+    { role: 'assistant', content: null, tool_calls: [{ function: { name: 'send_message', arguments: '{"text":"我是 Ech0es"}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: '发送成功' }
+  ];
+  const reasonings = ['', '他又在测我，直接报名字。', ''];
+  const t = collectAssistantText(msgs, { reasonings });
+  assert.ok(t.includes('他又在测我'), '应取到旁路的 reasoning');
+  assert.ok(!t.includes('send_message'), '仍不应含工具名');
+  assert.ok(!t.includes('发送成功'), '仍不应含 tool 结果');
+});
+
+await check('collectAssistantText：reasoning 与正文都收（推理在前）', () => {
+  const msgs = [{ role: 'assistant', content: '最后决定回他一句' }];
+  const t = collectAssistantText(msgs, { reasonings: ['先想想怎么说', ''] });
+  assert.ok(t.includes('先想想怎么说'), '应含 reasoning');
+  assert.ok(t.includes('最后决定回他一句'), '应含正文');
+  assert.ok(t.indexOf('先想想怎么说') < t.indexOf('最后决定回他一句'), 'reasoning 应排在正文前');
+});
+
+await check('collectAssistantText：兼容 raw 里嵌套的老形态', () => {
+  const msgs = [{
+    role: 'assistant',
+    content: null,
+    raw: { choices: [{ message: { reasoning_content: '藏在 raw 里的思考' } }] }
+  }];
+  const t = collectAssistantText(msgs);
+  assert.ok(t.includes('藏在 raw 里的思考'), '应能从 raw.choices 兜底取到');
+});
+
 // ═══ 4. parseDistillResult ═══
 await check('parseDistillResult：直接 JSON 数组', () => {
   assert.deepEqual(parseDistillResult('["A","B"]'), ['A', 'B']);
@@ -178,6 +212,29 @@ await check('distillBuffer：无 assistant 文本 → 不调模型，返回 []',
   });
   assert.equal(written.length, 0);
   assert.equal(called, false, '没有可蒸馏文本时不应调用模型');
+});
+
+// 真实场景：deepseek-flash 这类模型正文恒为空，思考全在 reasoning_content 里。
+// 没有这条，蒸馏在真实运行中恒返回 skipped-empty-cot（点了按钮没反应）。
+await check('distillBuffer：正文空但有 reasoning_content → 照样蒸馏成功', async () => {
+  const m = new MemoryStore();
+  const k = 'group:324';
+  let sawUser = '';
+  const written = await distillBuffer({
+    memory: m, chatKey: k,
+    messages: [
+      { role: 'user', content: '海龟汤来一局' },
+      { role: 'assistant', content: null, tool_calls: [{ function: { name: 'send_message', arguments: '{}' } }] }
+    ],
+    reasonings: ['', '我出的谜底是镜子，记住别主动说破。'],
+    callModel: async ({ messages }) => {
+      sawUser = messages[1].content;
+      return { message: { content: '["海龟汤进行中，谜底是镜子"]' } };
+    }
+  });
+  assert.equal(written.status, 'ok', `应蒸馏成功，实际 ${written.status}（${written.reason || ''}）`);
+  assert.ok(sawUser.includes('谜底是镜子'), '蒸馏输入应带上 reasoning 原文');
+  assert.equal(m.selfNotes(k).length, 1, '应写入自身状态');
 });
 
 await check('distillBuffer：模型返回空数组 → 不写入任何条目', async () => {
