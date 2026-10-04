@@ -46,7 +46,21 @@ const MODEL_RULES = [
   { dialect: 'openrouter', host: /openrouter\.ai$/i, model: /./, supports: ['effort', 'budget'] },
   { dialect: 'xai', host: /x\.ai$/i, model: /grok/i, supports: ['effort'] },
   // 中转站常见：模型名带 deepseek/qwen 前缀但域名是自己的 —— 上面 host:null 的规则已覆盖
+  //
+  // ⚠️ deepseek 曾**只有域名规则、没有模型名兜底**（其他方言都有），
+  //    于是走任何中转站（域名不匹配）时都落到下面的 generic → 档位静默失效。
+  //    实测：market.frostfox.ai + deepseek-v4-pro → generic → 一个思考参数都不发，
+  //    而同渠道 claude-opus-4-6 → anthropic 正常。这是唯一的不对称点，已补上。
+  { dialect: 'deepseek', host: null, model: /deepseek/i, supports: ['off', 'on'] },
   { dialect: 'generic', host: null, model: /./, supports: [] }
+];
+
+/** 用户可在 UI 手动指定的方言（对应 MODEL_RULES 里的 dialect 值）。
+ *  空串 = 全自动（按域名/模型名判定）。
+ *  'generic' 也在列表里：明知不支持还要显式发时才选它。 */
+export const SELECTABLE_DIALECTS = [
+  'deepseek', 'anthropic', 'qwen', 'glm', 'openai-o',
+  'gemini', 'openrouter', 'xai', 'generic'
 ];
 
 /** 各方言的可读名称（UI 展示）。 */
@@ -70,6 +84,21 @@ export const THINKING_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
 /** OpenAI 系 reasoning_effort 的合法取值（xhigh/max 会被就近映射到 high）。 */
 const OPENAI_EFFORTS = ['minimal', 'low', 'medium', 'high'];
 
+/**
+ * DeepSeek / GLM 系 reasoning_effort 的**合法取值**。
+ *
+ * 官方文档只承认 low / high / max 三个值，所以本项目的六档要落到这三个上。
+ * 映射依据是官方档位表（minimal→low、medium→high、xhigh→high、max→max），
+ * **不是**"档位越大思考越长"—— 见下方 buildThinkingParams 里的实测警告。
+ */
+const DEEPSEEK_EFFORTS = {
+  low: 'low',
+  medium: 'high',   // 官方映射：medium → high
+  high: 'high',
+  xhigh: 'high',    // 本项目的"超高"落到 high（DeepSeek 无此档）
+  max: 'max'
+};
+
 export function hostOf(baseUrl) {
   const raw = String(baseUrl || '').trim();
   if (!raw) return '';
@@ -87,9 +116,23 @@ export function isLocalEndpoint(baseUrl) {
 }
 
 /**
- * 识别方言。返回 { dialect, label, supports, reason }。
+ * 识别方言。返回 { dialect, label, supports, reason, manual }。
+ *
+ * 判定优先级：
+ *   ① **手动指定**（`manual`）—— 用户在设置里显式选的，最高优先级。
+ *      存在的理由：自动判定本质是**猜**域名/模型名，而中转站会把两者都改掉
+ *      （域名是自家、模型名是 `deepseek/deepseek-v4-pro` 这种带前缀的形式），
+ *      猜不中就落 generic → 档位静默失效、用户以为调了其实没调。
+ *      对这类渠道，**只有用户知道该用哪个方言**。
+ *   ② 域名匹配
+ *   ③ 模型名匹配
+ *   ④ 都不中 → generic（宁缺勿错，一个参数都不发）
+ *
+ * @param {string} [opts.manual] 手动方言；空/非法值 = 走自动判定
+ * @param {string} [opts.baseUrl]
+ * @param {string} [opts.model]
  */
-export function detectDialect({ baseUrl = '', model = '' } = {}) {
+export function detectDialect({ baseUrl = '', model = '', manual = '' } = {}) {
   const host = hostOf(baseUrl) || String(baseUrl || '').toLowerCase();
   const id = String(model || '');
   const match = (rule) => {
@@ -97,17 +140,52 @@ export function detectDialect({ baseUrl = '', model = '' } = {}) {
     if (rule.model && !rule.model.test(id)) return false;
     return true;
   };
-  const hit = MODEL_RULES.find((r) => r.host && match(r))     // 第一轮：域名优先
-    ?? MODEL_RULES.find((r) => !r.host && match(r));          // 第二轮：再看模型名
+
+  // ① 手动指定优先。supports 从 MODEL_RULES 里**该方言的第一条规则**取，
+  //    保证与 buildThinkingParams 用的是同一张表（两处若各写一份，迟早漂移）。
+  //    ⚠️ 不能只找 host:null 的规则 —— openrouter / xai / ollama / local-openai
+  //    都**只有域名规则**（它们本身就是靠域名识别的，本就不该按模型名匹配），
+  //    限定 !r.host 会让这些方言"手动指定了却判成 generic"。
+  const wanted = String(manual || '').trim();
+  if (wanted) {
+    const rule = MODEL_RULES.find((r) => r.dialect === wanted);
+    if (rule) {
+      return {
+        dialect: rule.dialect,
+        label: DIALECT_LABELS[rule.dialect] || rule.dialect,
+        supports: [...rule.supports],
+        manual: true,
+        reason: `手动指定为 ${rule.dialect}`
+      };
+    }
+    // 非法值不静默吞掉 —— 落 generic 并在 reason 里说明，便于 UI 提示"没生效"
+    return {
+      dialect: 'generic',
+      label: DIALECT_LABELS.generic,
+      supports: [],
+      manual: true,
+      reason: `手动指定「${wanted}」不是已知方言，已回退为通用（不发送思考参数）`
+    };
+  }
+
+  const hit = MODEL_RULES.find((r) => r.host && match(r))     // ② 域名优先
+    ?? MODEL_RULES.find((r) => !r.host && match(r));          // ③ 再看模型名
   if (hit) {
     return {
       dialect: hit.dialect,
       label: DIALECT_LABELS[hit.dialect] || hit.dialect,
       supports: [...hit.supports],
+      manual: false,
       reason: `${hit.host ? `域名 ${host}` : '模型名'} 命中规则 ${hit.dialect}`
     };
   }
-  return { dialect: 'generic', label: DIALECT_LABELS.generic, supports: [], reason: '未命中任何方言规则' };
+  return {
+    dialect: 'generic',
+    label: DIALECT_LABELS.generic,
+    supports: [],
+    manual: false,
+    reason: '未命中任何方言规则（可在设置里手动指定）'
+  };
 }
 
 /** 明确列出会往请求体里加的键（降级重试时要把它们摘掉）。 */
@@ -148,7 +226,14 @@ export function resolveThinkingRequest(api = {}, context = {}) {
     else if (mode === 'on') effort = 'high';   // 明确开启、未指定强度 → 中高档
   }
   if (perCall === 'off') effort = 'off';
-  const det = detectDialect({ baseUrl: api.baseUrl || '', model: api.model || '' });
+  // manual = 用户在设置里显式指定的方言（api.thinkingDialect）。空 = 全自动。
+  // 中转站把域名和模型名都改了，自动判定本质是猜；猜不中落 generic 时
+  // 档位会静默失效，所以留这个手动出口。
+  const det = detectDialect({
+    baseUrl: api.baseUrl || '',
+    model: api.model || '',
+    manual: api.thinkingDialect || ''
+  });
   const budget = Number(api.thinkingBudget) > 0 ? Number(api.thinkingBudget) : 0;
   return {
     effort,
@@ -157,6 +242,7 @@ export function resolveThinkingRequest(api = {}, context = {}) {
     dialect: det.dialect,
     dialectLabel: det.label,
     supports: det.supports,
+    manual: det.manual,
     reason: det.reason
   };
 }
@@ -187,6 +273,21 @@ export function buildThinkingParams({ effort = '', dialect = 'generic', budget =
     case 'glm': {
       if (on) { params.thinking = { type: 'enabled' }; applied = true; omitTemperature = true; }
       else if (e === 'off') { params.thinking = { type: 'disabled' }; applied = true; }
+      // effort 与开关**并列**，不塞进 if(on) 里。
+      // 依据（2026-10-04 实测 scripts/probe-thinking-effort.mjs，9 组 × 3 次取中位数）：
+      //   thinking=disabled 时 rc_tok 恒为 0，但 effort 仍在改变 completion/正文
+      //   （无 3265 / low 2589 / high 2524 / max 3142）→ 它作用在正文投入上，
+      //   与思考开关是两条独立的轴。所以关掉思考时也照发 effort。
+      // ⚠️ 两条实测结论，都不要在注释里简化成"档位越大思考越长"：
+      //   1) 档位**非单调**：on 组 rc 中位数 无 7588 / low 4521 / medium 5841 /
+      //      high 5585 / max 8192 —— low 明显低于"不指定"，medium 甚至高于 high。
+      //   2) **不指定 effort 反而思考最多**（7588，仅次于 max）。这可能是
+      //      "模型自行决定思考量"的路径，与用户显式指定时的行为不同。
+      //   所以这里只做"映射到合法值"，不声称任何单调关系。
+      if (e && e !== 'off') {
+        const mapped = DEEPSEEK_EFFORTS[e] ?? null;
+        if (mapped) { params.reasoning_effort = mapped; applied = true; }
+      }
       break;
     }
     case 'qwen': {

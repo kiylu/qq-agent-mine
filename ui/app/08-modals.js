@@ -1394,18 +1394,24 @@ async function saveConfig({ quiet = false } = {}) {
 
   if (sec === 'chat') {
     // 信息发送配置已内联到「运行节奏」折叠卡（sc-* 字段）
-    const effort = val('#sc-thinking-effort', c.api?.thinkingEffort || '');
-    const effortValid = ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort);
-    // effort 档与 (mode, effort) 二维状态的映射。'on-noeffort' 是独立档：
-    // 后端思考模块区分 on（明确开启）/ auto（跟随模型），若在这里
-    // 折叠成 ''（默认），"明确开启思考但选中的下拉档恰好是'开'"的既有配置
-    // 会在一次无关保存中被静默改写成 auto。
-    const prevMode = c.api?.thinkingMode || 'auto';
+    const effortRaw = val('#sc-thinking-effort', c.api?.thinkingEffort || '');
+    // 读旧值时归一（2026-10-04 档位简化，见 06-settings-render.js 注释）：
+    //   xhigh → high（值仍被 thinking.js 的映射表支持，只是 UI 不再单列）
+    //   on-noeffort → ''（该档已并入 default）
+    const effort = effortRaw === 'xhigh' ? 'high' : (effortRaw === 'on-noeffort' ? '' : effortRaw);
+    const effortValid = ['low', 'medium', 'high', 'max'].includes(effort);
+    // (mode, effort) 的映射：下拉现在是 6 档，语义比原来简单 ——
+    //   off        → 明确关闭
+    //   具体档位    → 明确开启 + 指定强度
+    //   default('') → **不发送任何思考参数**，由模型自行决定（沿用原有行为）
+    //
+    // ⚠️ 这里不再把 default 折叠成 mode='on'：实测（scripts/probe-thinking-effort.mjs）
+    //   `on + 无档` 与 `auto` 对 DeepSeek 生成的**请求体完全相同**（都不发 thinking 参数），
+    //   既然行为一样就不该在保存时互相改写 —— 那正是老 `on-noeffort` 档想防的问题，
+    //   但它自己引入了另一种状态分裂。现在统一成 auto，语义更准。
     let thinkingMode;
     if (effort === 'off') thinkingMode = 'off';
     else if (effortValid) thinkingMode = 'on';
-    else if (effort === 'on-noeffort') thinkingMode = 'on';
-    else if (prevMode === 'on') thinkingMode = 'on';   // 原本就是 on 且下拉显示"默认"：保持 on
     else thinkingMode = 'auto';
     patch.api = {
       ...(c.api || {}),
@@ -1492,6 +1498,21 @@ async function saveConfig({ quiet = false } = {}) {
     patch.tools = state.config.tools || { enabled: true, overrides: {}, categories: {} };
   }
 
+  if (sec === 'developer') {
+    // 只改一个开关，但仍要带上完整 api 段 —— saveConfig 是整段覆盖 api 的
+    // （见上面 sec === 'api' 分支），只塞 { debugStoreRequest } 会把
+    // 模型名、温度、思考档位等全部抹掉。
+    const dialect = val('#cfg-thinking-dialect', '');
+    patch.api = {
+      ...(c.api || {}),
+      debugStoreRequest: chk('#cfg-debug-store-request', false),
+      // 白名单校验：只接受 SELECTABLE_DIALECTS 里的值。
+      // 不校验的话，手改 config.json 塞个错值会一路传到 detectDialect。
+      thinkingDialect: ['deepseek', 'anthropic', 'qwen', 'glm', 'openai-o',
+        'gemini', 'openrouter', 'xai', 'generic'].includes(dialect) ? dialect : ''
+    };
+  }
+
   // ── POST 之前的最后防线：去掉"空 patch"造成的无谓请求 ──
   // 变动监听挂在整个 #settings-form 上，点击 readonly 输入框、拖动滑条
   // 等不产生真实改动的操作也会触发一次保存。空 patch（没有任何顶层键）
@@ -1510,5 +1531,11 @@ async function saveConfig({ quiet = false } = {}) {
   const data = await api('/api/config', { method: 'POST', body: bodyStr, ...(useKeepalive ? { keepalive: true } : {}) });
   state.config = data.config;
   if (!quiet) $('#model-label').textContent = `模型：${state.config.api.model || '未设置'}`;
+  // 开发者分区会展示"当前思考方言判定结果"，它由后端 statusSummary 算出。
+  // 不刷新的话，用户刚改完方言看到的还是**旧判定** —— 又是一次"改了没反应"。
+  // 失败静默：status 拿不到不影响配置已保存成功，不能因此报错打断保存。
+  if (sec === 'developer') {
+    try { state.status = await api('/api/status'); } catch { /* 忽略 */ }
+  }
   return data;
 }

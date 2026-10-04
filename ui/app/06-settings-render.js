@@ -47,7 +47,8 @@ function renderSettingsSidebar() {
     ['chat', '聊天设置'],
     ['desktop', '桌面端'],
     ['onebot', 'OneBot（SnowLuma）'],
-    ['tools', '工具与技能']
+    ['tools', '工具与技能'],
+    ['developer', '开发者']
   ];
   sidebar.innerHTML = `
     <div class="settings-runstate">
@@ -152,7 +153,8 @@ function renderSettingsSection(c) {
     chat: () => renderChatSection(c),
     desktop: () => renderDesktopSection(c),
     onebot: () => renderOnebotSection(c),
-    tools: () => renderToolsSection(c)
+    tools: () => renderToolsSection(c),
+    developer: () => renderDeveloperSection(c)
   };
   const render = sections[sec] || sections.api;
   return `
@@ -837,25 +839,33 @@ return `
       <div class="field"><label>思考强度</label>
         <select id="sc-thinking-effort">
           ${[
-            ['off', '关（不思考，明确关闭）'],
-            ['', '默认（跟随模型/网关）'],
-            ['on-noeffort', '开（明确开启，不指定强度）'],
-            ['low', '低（快、省 token）'],
-            ['medium', '中'],
-            ['high', '高（慢、细致）'],
-            ['xhigh', '超高（更慢、更深入）'],
-            ['max', '拉满（最强推理）']
+            ['', 'default（不指定，由模型自行决定）'],
+            ['off', 'off（关闭思考）'],
+            ['low', 'low（更快更省）'],
+            ['medium', 'medium（适中）'],
+            ['high', 'high（更细致）'],
+            ['max', 'max（最强推理）']
           ].map(([v, l]) => {
             const eff = c.api?.thinkingEffort || '';
             const mode = c.api?.thinkingMode || 'auto';
-            // (mode, effort) 二维状态压成一维下拉：off 优先，其次 effort 档；
-            // "on 但没指定强度"是独立档 on-noeffort（不能折叠进"默认"——
-            // 那样一次保存会把明确开启改写成 auto，见 saveConfig chat 分支）。
-            const sel = mode === 'off' ? 'off' : (eff || (mode === 'on' ? 'on-noeffort' : ''));
+            // (mode, effort) 二维状态压成一维下拉。
+            // 折叠规则：off 优先 → 其次具体档位 → "on 但无档"与"auto"都显示为 default。
+            //
+            // ⚠️ 历史包袱（2026-10-04）：以前有 'on-noeffort' / 'xhigh' 两个独立档，
+            //  它们与 (mode, effort) 的映射让"明确开启但不指定强度"这一状态在一次
+            //  无关保存里被静默改写成 auto（见 08-modals.js saveConfig 的注释）。
+            //  现在两档都并入 default：`on + 无档` 与 `auto` 对 DeepSeek 而言
+            //  **请求体完全相同**（都不发任何 thinking 参数），本来就该合并显示。
+            //  读旧配置时把 xhigh 就近归到 high（值仍兼容，见 thinking.js 的映射表）。
+            const sel = mode === 'off'
+              ? 'off'
+              : ({ xhigh: 'high' }[eff] ?? eff);   // 旧值归一
             return `<option value="${v}" ${sel === v ? 'selected' : ''}>${l}</option>`;
           }).join('')}
         </select>
-        <div class="hint">内置落成各厂商思考参数（off~max 六档）；渠道不支持高档时向下就近映射。</div></div>
+        <div class="hint">default = 不发送思考参数，由模型自行决定强度（沿用原有行为）。
+          显式指定档位时会按厂商协议映射到合法值 —— 各家档位并非线性对应，
+          实测 DeepSeek 的 low/medium/high 甚至不是单调关系。</div></div>
       <div class="field-row">
         <div class="field"><label>防抖聚批窗口（毫秒）</label><input type="number" id="sc-wakedelay" min="0" value="${esc(c.wakeDelayMs)}" /></div>
         <div class="field"><label>批次间隔（毫秒）</label><input type="number" id="sc-draindelay" min="0" value="${esc(c.drainDelayMs)}" /></div>
@@ -1698,6 +1708,95 @@ function renderToolsSection(c) {
         </div>
         ${categoryCards || '<div class="hint">（还没有注册任何工具）</div>'}`
     })}`;
+}
+
+/**
+ * 开发者分区（2026-10-04 新增）。
+ *
+ * 目前只有一项开关，但刻意单独开一个分区：这类"给排障用的能力"混进
+ * 聊天设置里会被当成普通偏好，用户不知道打开它意味着什么（会把含完整
+ * 提示词与工具定义的请求体写进会话存档）。单独分区 + 明确警告更合适。
+ */
+function renderDeveloperSection(c) {
+  const on = c.api?.debugStoreRequest === true;
+  const cur = c.api?.thinkingDialect || '';
+  // 运行时判定结果（后端 statusSummary 算好）—— 告诉用户"自动判成了什么"，
+  // 否则他看到一个不生效的档位根本不知道该手动选哪个。
+  const th = (state.status?.orchestrator?.thinking) || null;
+  const DIALECT_OPTIONS = [
+    ['', '自动判定（推荐）'],
+    ['deepseek', 'DeepSeek（thinking + reasoning_effort）'],
+    ['anthropic', 'Claude / Anthropic（thinking + budget）'],
+    ['qwen', '通义千问（enable_thinking + budget）'],
+    ['glm', '智谱 GLM（thinking）'],
+    ['openai-o', 'OpenAI o / gpt-5（reasoning_effort）'],
+    ['gemini', 'Gemini（thinking_config）'],
+    ['openrouter', 'OpenRouter（reasoning）'],
+    ['xai', 'xAI / Grok（reasoning_effort）'],
+    ['generic', '通用：明确不发送任何思考参数']
+  ];
+  // 失效提醒：用户显式选了档位，但该渠道判成 generic → 档位不会生效。
+  const ineffective = th && th.effort && th.effort !== 'off' && !th.applied;
+  return `
+    <div class="card">
+      <div class="card-title">开发者</div>
+      <div class="card-body">
+        <div class="field">
+          <label>思考参数方言</label>
+          <select id="cfg-thinking-dialect">
+            ${DIALECT_OPTIONS.map(([v, l]) =>
+              `<option value="${v}" ${cur === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+          </select>
+          <div class="hint">
+            各厂商的思考参数<strong>字段名完全不同</strong>（DeepSeek 用
+            <code>reasoning_effort</code>、Claude 用 <code>thinking.budget_tokens</code>、
+            Qwen 用 <code>enable_thinking</code>），发错字段名会被网关拒绝。
+            自动判定靠猜域名与模型名，<strong>中转站常猜不中</strong> —— 这时手动指定。
+          </div>
+          ${th ? `<div class="hint" style="margin-top:6px">
+            当前判定：<strong>${esc(th.dialectLabel || th.dialect || '—')}</strong>
+            ${th.manual ? '（手动指定）' : '（自动）'}
+            ｜ 依据：${esc(th.reason || '—')}
+            ${th.sentParams && Object.keys(th.sentParams).length
+              ? `｜ 实际发送 <code>${esc(JSON.stringify(th.sentParams))}</code>`
+              : ''}
+          </div>` : ''}
+          ${ineffective ? `<div class="hint" style="color:var(--color-text-danger);margin-top:6px">
+            ⚠️ 你选了档位 <code>${esc(th.effort)}</code>，但当前渠道判定为
+            <strong>通用（不发送思考参数）</strong> —— <strong>该档位不会生效</strong>，
+            模型会用自己的默认强度。若本渠道确实支持 DeepSeek 协议，请在上方手动指定。
+          </div>` : ''}
+          ${!th?.manual && !ineffective && th?.effort && th?.effort !== 'off' && th?.applied === false
+            ? `<div class="hint" style="margin-top:6px">档位 <code>${esc(th.effort)}</code> 已生效（自动判定为 ${esc(th.dialect)}）。</div>`
+            : ''}
+        </div>
+        <div class="field">
+          <label class="check">
+            <input type="checkbox" id="cfg-debug-store-request" ${on ? 'checked' : ''}>
+            <span>记录实际发出的请求体</span>
+          </label>
+          <div class="hint">
+            开启后，每个会话会保存<strong>最后一次</strong>真正发给模型的请求体
+            （含 tools 定义、tool_choice、采样参数、思考参数等），可在会话详情的
+            <strong>JSON 模式</strong>里查看。
+          </div>
+          <div class="hint" style="color:var(--color-text-danger)">
+            ⚠️ 关闭时为省空间与隐私，请求体<strong>只记结构不记正文</strong>：
+            messages 只存每条的 role 与字符数、tools 只存工具名与描述长度。
+            完整提示词正文本来就在 JSON 模式的 inputMessages 里，不必重复落盘。
+            排查完建议关掉 —— 存档会随运行持续累积。
+          </div>
+          <div style="margin-top:10px">
+            <button class="btn btn-sm" id="btn-strip-snapshots" type="button">清理已存的请求体快照</button>
+            <div class="hint">
+              把历史会话里存过的<strong>请求体快照全部抹掉</strong>。
+              这些快照对机器人的实际行为<strong>没有任何影响</strong>，
+              只是排障时看的 —— 抹掉后聊天记录、上下文、思考链、用量统计全部保留。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 /**

@@ -1285,6 +1285,19 @@ export function createRoutes(deps) {
       }
     },
     {
+      // 剥离全部会话里的开发者模式请求体快照（保留会话记录本身）。
+      // 与 clear-finished 的区别：那条删**整条**记录（含用量历史），
+      // 这条只抹掉 lastRequest 字段 —— 对实际行为零影响，属无害清理。
+      method: 'POST', pattern: '/api/sessions/strip-request-snapshots',
+      handler: async ({ res, json }) => {
+        const r = sessions.stripRequestSnapshots();
+        // 用 session-end（UI 已在监听这个事件去重载列表）而不是 session-update
+        // —— 后者要求 payload 带 sessionId，空载荷会被 app.js 直接忽略。
+        emit('session-end', { status: 'snapshots-stripped', ...r });
+        return json(res, 200, { ok: true, ...r });
+      }
+    },
+    {
       // 手动重试一条失败的会话：把触发批翻回未读并立即唤醒（会话页「重试」按钮）。
       // 只有 error 状态且未发出过消息的会话允许重试（已发言的重试 = 群里看到两遍）。
       method: 'POST', pattern: /^\/api\/sessions\/([\w-]+)\/retry$/,

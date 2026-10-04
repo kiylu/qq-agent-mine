@@ -526,6 +526,57 @@ export class SessionRegistry {
     return removed;
   }
 
+  /**
+   * 剥离全部会话存档里的**开发者模式请求体快照**（`lastRequest` 字段）。
+   *
+   * 为什么需要单独的清理入口：这个字段是 `api.debugStoreRequest` 开着时
+   * 落盘的排障数据（端点/参数/工具清单），**对机器人的实际行为没有任何影响** ——
+   * 它只在 UI 的"实际请求体"面板里被读。查完问题就没人再看了，
+   * 却要跟着每条存档一直存着。
+   *
+   * 与 `clearFinished` 的区别：那条是**删整条会话记录**（含用量历史），
+   * 这条只抹字段、会话记录与统计口径**完全不动** —— 属于无害清理。
+   *
+   * 正在运行的会话不碰：它的 lastRequest 还在用（会话详情正开着）。
+   * @returns {{scanned:number, cleaned:number, running:number}}
+   */
+  stripRequestSnapshots() {
+    let scanned = 0;
+    let cleaned = 0;
+    let running = 0;
+    // current 是活会话：直接改对象再回写（get() 走的是 structuredClone，改它无效）。
+    for (const [id, s] of this.current) {
+      if (!s) continue;
+      scanned++;
+      if (s.status === 'running' || s.status === 'waiting') { running++; continue; }
+      if (s.lastRequest) {
+        s.lastRequest = null;
+        cleaned++;
+        // 用 #persist（立即落盘）而不是 update（节流）：清理是"立刻生效"的操作，
+        // 走节流的话待写入队列里还压着带 lastRequest 的旧快照，
+        // 稍后又被写回磁盘 —— 表现为"点了清理，过一会儿又冒出来"。
+        this.#persist(s);
+        const idx = this.index.findIndex((e) => e.id === id);
+        if (idx >= 0) this.index[idx] = this.#summary(s);
+      }
+    }
+    // 磁盘上的历史存档：读 → 删字段 → 写回。index 里只存摘要，不动。
+    for (const e of this.index) {
+      if (this.current.has(e.id)) continue;   // 上面已处理
+      const f = path.join(SESSIONS_DIR, `${e.id}.json`);
+      if (!fs.existsSync(f)) continue;
+      scanned++;
+      try {
+        const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+        if (!raw?.lastRequest) continue;
+        delete raw.lastRequest;
+        fs.writeFileSync(f, JSON.stringify(raw, null, 2));
+        cleaned++;
+      } catch { /* 单条失败不影响其余 */ }
+    }
+    return { scanned, cleaned, running };
+  }
+
   listSummaries(limit = 100) {
     return this.index.slice(0, limit);
   }

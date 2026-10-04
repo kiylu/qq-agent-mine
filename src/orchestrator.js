@@ -21,6 +21,7 @@ import { vendorOfConfig } from './model-prices.js';
 import { randInt } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, buildContinuationPrompt, resolveContextTier } from './prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from './llm.js';
+import { resolveThinkingRequest, buildThinkingParams } from './thinking.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from './tools.js';
 import { modelImageVerdict } from './vision-scan.js';
 import { currentProviders } from './providers.js';
@@ -684,6 +685,9 @@ export class Orchestrator {
     live.finishReason = null;
     live.activity = '';
     live.inputMessages = [];
+    // 开发者模式抓的请求体同样要清 —— 它带着上一轮的 tools 定义与参数，
+    // 留着会与重试后的新一轮对不上，比没有更误导。
+    live.lastRequest = null;
     live.usage = { promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, calls: 0 };
     this.sessions.update(session.id);
     this.emit('session-update', session.id);
@@ -1099,7 +1103,21 @@ export class Orchestrator {
       // 网络抖动/5xx/429 会自动重试（同一轮请求，messages 不变，幂等不重复发言）。
       // abortSignal：会话级中止时在途请求立即断开 —— isRetryableError 把
       // "中止"判为不可重试，chatCompletionWithRetry 不再打下一发，直接上抛。
-      const response = await chatCompletionWithRetry({ messages, tools: openAiTools, skillContext, signal: abortSignal });
+      //
+      // onRequest：开发者模式（api.debugStoreRequest）下把**实际发出的请求体**
+      // 存进会话存档。只留最后一次 —— 多轮工具调用时每轮 body 都不同，
+      // 全存会让存档膨胀（tools 定义要重复好几遍），而排查"模型到底收到了什么"
+      // 最后一次已经够用。
+      const response = await chatCompletionWithRetry({
+        messages,
+        tools: openAiTools,
+        skillContext,
+        signal: abortSignal,
+        onRequest: cfg.api?.debugStoreRequest
+          ? (body, meta) => { session.lastRequest = captureRequestBody(body, meta); }
+          : null
+      });
+
       session.model = response.model || session.model;
       // 渠道与模型必须同源：fallback 可以配另一个 provider，只更新 model 会把
       // 这次调用记到主渠道名下，导致按渠道拆分的成本报表误导用户。
@@ -2180,6 +2198,11 @@ export class Orchestrator {
 
   statusSummary() {
     const cfg = getConfig();
+    // 思考方言的**当前判定结果** —— UI 用它提示"自动判定为什么没生效"或
+    // "手动指定的是什么"。没有这一段的话，用户选了 max 却没发参数只能靠猜
+    // （2026-10-04 实测踩过：中转站下判成 generic，档位静默失效）。
+    const thinking = resolveThinkingRequest(cfg.api, {});
+    const built = buildThinkingParams({ effort: thinking.effort, dialect: thinking.dialect, budget: thinking.budget });
     return {
       paused: this.paused,
       pauseReason: this.pauseReason ?? null,
@@ -2188,13 +2211,101 @@ export class Orchestrator {
       consolidating: [...this.consolidating],
       onebotConnected: this.onebot.connected,
       model: cfg.api.model,
-      maxConcurrentRuns: cfg.maxConcurrentRuns
+      maxConcurrentRuns: cfg.maxConcurrentRuns,
+      thinking: {
+        dialect: thinking.dialect,
+        dialectLabel: thinking.dialectLabel,
+        supports: thinking.supports,
+        manual: thinking.manual,
+        reason: thinking.reason,
+        effort: thinking.effort,
+        on: thinking.on,
+        // applied=false 表示"这个渠道不会收到任何思考参数"：
+        // 可能是判成了 generic（用户该手动指定），也可能是档位=default（正常）。
+        applied: built.applied,
+        sentParams: built.params
+      }
     };
   }
 }
 
 function safeParse(text) {
   try { return typeof text === 'string' ? JSON.parse(text) : text; } catch { return { raw: String(text).slice(0, 500) }; }
+}
+
+/**
+ * 开发者模式：把实际发出的请求体脱敏后存进会话（`session.lastRequest`）。
+ *
+ * 为什么需要：会话 JSON 模式原本只展示 `inputMessages`（system+user），
+ * 但 `llm.js` 真正发出去的 body 还有 tools 定义、tool_choice、采样参数、
+ * 思考参数等 —— 排查"为什么模型不调工具 / 不思考 / 答案被截断"时，
+ * 这些才是关键，而它们此前**在任何地方都看不到**（日志也不记 body）。
+ *
+ * ⚠️ 脱敏是必须的，不是可选的：body 里含完整系统提示与工具定义（内部信息），
+ * 存档会落盘、还会进 UI 展示。这里做两件事：
+ *   1. 只保留 messages 的**条数与每条的 role/长度**，正文用 inputMessages 已有的；
+ *   2. 显式剥离任何疑似凭据的键（api_key / token / secret / password…）。
+ * 体积上也更可控 —— tools 定义重复几遍会显著撑大存档。
+ */
+function captureRequestBody(body, meta) {
+  const out = {
+    endpoint: `${meta?.baseUrl ?? ''}/chat/completions`,
+    model: meta?.model ?? '',
+    attempt: meta?.attempt ?? 1,
+    at: new Date().toISOString()
+  };
+  if (!body || typeof body !== 'object') return out;
+
+  // 参数：原样保留（这正是排查的关键），但剥掉凭据类字段。
+  // ⚠️ 匹配必须**按段**判断，不能只搜子串 ——
+  //   搜子串会把 `max_tokens` 里的 "token" 当凭据剥掉，
+  //   而它恰恰是排查"答案被截断"最该看的参数（实测踩过）。
+  // 规则：切成段（下划线/连字符/驼峰）后，**任一段**等于凭据词即剥离。
+  // 这样 x-api-key / apiKey / access_token 都能命中，
+  // 而 max_tokens / reasoning_tokens / tool_choice 不误伤。
+  const CREDENTIAL_WORDS = new Set([
+    'key', 'apikey', 'token', 'accesstoken', 'refreshtoken', 'idtoken',
+    'secret', 'password', 'passwd', 'authorization', 'cookie'
+  ]);
+  const isCredentialKey = (k) => String(k)
+    // 驼峰 → 分段（apiKey → api,Key）；连字符/下划线天然就是分隔符
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_\-.\s]+/)
+    .some((seg) => CREDENTIAL_WORDS.has(seg));
+
+  const params = {};
+  for (const [k, v] of Object.entries(body)) {
+    if (k === 'messages' || k === 'tools') continue;
+    if (isCredentialKey(k)) continue;
+    params[k] = v;
+  }
+  out.params = params;
+
+  // messages：只记结构，正文去 inputMessages 查（那里已有完整版且做过投影）。
+  if (Array.isArray(body.messages)) {
+    out.messages = body.messages.map((m) => ({
+      role: m?.role ?? '(无 role)',
+      chars: typeof m?.content === 'string' ? m.content.length : JSON.stringify(m?.content ?? '').length,
+      // 工具轮的关键信息：调了哪些工具、参数多大（不记参数内容）
+      toolCalls: (m?.tool_calls ?? []).map((t) => ({
+        name: t?.function?.name ?? t?.name ?? '?',
+        argChars: String(t?.function?.arguments ?? '').length
+      }))
+    }));
+    out.messageCount = body.messages.length;
+  }
+
+  // tools：只记工具名与描述长度 —— 排查"为什么不调某个工具"够用了。
+  if (Array.isArray(body.tools)) {
+    out.tools = body.tools.map((t) => ({
+      name: t?.function?.name ?? t?.name ?? '?',
+      descChars: String(t?.function?.description ?? t?.description ?? '').length
+    }));
+    out.toolCount = body.tools.length;
+  }
+  if (body.tool_choice !== undefined) out.toolChoice = body.tool_choice;
+  return out;
 }
 
 // ── 内联工具调用解析（少数模型不返回原生 tool_calls，而是把调用写进文本） ──

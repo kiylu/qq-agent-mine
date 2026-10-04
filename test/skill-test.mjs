@@ -247,9 +247,17 @@ async function main() {
     ok('思考方言识别：deepseek / openrouter / 本地 / 未知 / 域名优先');
 
     // 六档参数构造（off / low / medium / high / xhigh / max）
+    // ⚠️ 2026-10-04：DeepSeek 分支现在**同时**发 thinking.type 与 reasoning_effort ——
+    // 旧断言只认 thinking.type（那时 effort 被塞在 if(on) 里、high 也发不出去）。
+    // 实测（scripts/probe-thinking-effort.mjs）证明 effort 是独立于思考开关的一条轴，
+    // 且 high 档此前一直静默失效。详见 test/thinking-test.mjs。
     const on = d.buildThinkingParams({ effort: 'high', dialect: 'deepseek' });
-    assert.deepEqual(on.params, { thinking: { type: 'enabled' } }, 'DeepSeek 开启应发 thinking.type');
+    assert.deepEqual(on.params, { thinking: { type: 'enabled' }, reasoning_effort: 'high' },
+      'DeepSeek 开启应同时发 thinking.type 与 reasoning_effort');
     assert.equal(on.omitTemperature, true, 'DeepSeek 思考与 temperature 互斥，应声明省略');
+    const dsLow = d.buildThinkingParams({ effort: 'low', dialect: 'deepseek' });
+    assert.deepEqual(dsLow.params, { thinking: { type: 'enabled' }, reasoning_effort: 'low' },
+      'DeepSeek low 档：effort 原样透传（修复前这里只发 thinking.type，low 是死档）');
     const off = d.buildThinkingParams({ effort: 'off', dialect: 'qwen' });
     assert.deepEqual(off.params, { enable_thinking: false }, 'Qwen 关闭应发 enable_thinking=false');
     const xhigh = d.buildThinkingParams({ effort: 'xhigh', dialect: 'openai-o' });

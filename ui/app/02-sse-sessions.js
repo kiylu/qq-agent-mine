@@ -620,6 +620,11 @@ function renderSessionDetail(s) {
         toolCall: m.toolCall
       })),
       sent: s.sent || [],
+      // 开发者模式（api.debugStoreRequest）抓的最后一次实际请求体。
+      // 此前只有 inputMessages（system+user），tools / 采样参数 / 思考参数
+      // 这些真正影响模型行为的东西在任何地方都看不到 —— 排查
+      // "为什么不调工具 / 不思考 / 答案被截断"时完全无从下手。
+      lastRequest: s.lastRequest ?? null,
       usage: s.usage || null,
       status: s.status,
       error: s.error ?? null
@@ -630,6 +635,37 @@ function renderSessionDetail(s) {
         <div class="coll-body" style="max-height:none">${esc(JSON.stringify(raw, null, 2))}</div>
       </details>`));
   } else {
+    // 开发者模式抓的实际请求体：放在非 JSON 模式下也能看 —— 排查参数问题
+    // 时不该被迫切到 JSON 去和一堆 raw 混在一起找。
+    if (s.lastRequest) {
+      const lr = s.lastRequest;
+      const toolLine = (lr.tools || []).length
+        ? `${lr.toolCount} 个：${lr.tools.map((t) => t.name).join('、')}`
+        : '（无）';
+      html.push(squeezeHtml(`
+        <details class="collapsible">
+          <summary>实际请求体（开发者模式 · 第 ${lr.attempt ?? 1} 次尝试 · ${lr.at || ''}）</summary>
+          <div class="coll-body">
+            <div class="thin-note">
+              端点 <code>${esc(lr.endpoint || '')}</code> ｜ 模型 <code>${esc(lr.model || '')}</code>
+              ｜ ${lr.messageCount ?? 0} 条消息 ｜ 工具 ${esc(toolLine)}
+            </div>
+            <div class="think-reasoning" style="margin-top:8px">
+              <div class="think-reasoning-tag">请求参数（原样）</div>
+              <pre style="margin:0;white-space:pre-wrap;word-break:break-all">${esc(JSON.stringify(lr.params || {}, null, 2))}</pre>
+            </div>
+            <div style="margin-top:10px">
+              <div class="hint">下面只记结构（正文见上方 inputMessages / 系统提示）</div>
+              <pre style="margin:4px 0 0;white-space:pre-wrap;word-break:break-all">${esc(JSON.stringify({
+                messageCount: lr.messageCount,
+                toolChoice: lr.toolChoice,
+                messages: lr.messages,
+                tools: lr.tools
+              }, null, 2))}</pre>
+            </div>
+          </div>
+        </details>`));
+    }
     if (s.systemPrompt) {
       html.push(squeezeHtml(`
         <details class="collapsible">

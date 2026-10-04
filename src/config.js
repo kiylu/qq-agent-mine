@@ -71,6 +71,27 @@ export const DEFAULT_CONFIG = {
     // 目的：防"雷霆大思考"（几千 token 的 reasoning 拖慢且烧钱）或该思考的完全不思考。
     thinkingMode: 'auto',
     thinkingEffort: '',
+    // 思考参数方言**手动指定**（''=全自动，按域名/模型名判定）。
+    //
+    // 为什么需要手动：自动判定本质是猜域名与模型名，而中转站会把两者都改掉
+    // （域名是自家、模型名写成 `deepseek/deepseek-v4-pro` 这种带前缀形式）。
+    // 猜不中就落 generic → **思考档位静默失效**：用户以为调了 max，
+    // 实际一个参数都没发出去（实测踩过，2026-10-04）。
+    // 对这类渠道，只有用户知道该用哪个方言。
+    // 可选值见 thinking.js 的 SELECTABLE_DIALECTS；不确定就留空走自动。
+    thinkingDialect: '',
+    // 思考强度档位：UI 现在只暴露 default/off/low/medium/high/max 六档
+    //（'default' = 空串 = 不发送任何思考参数，由模型自行决定强度，沿用原有行为）。
+    // 内部的 'xhigh' 仍被 thinking.js 接受（就近映射到 high），只为兼容旧配置。
+    //
+    // ⚠️ 各家档位**不是线性对应**。实测（scripts/probe-thinking-effort.mjs，2026-10-04）：
+    // DeepSeek on 组的 reasoning token 中位数 无 7588 / low 4521 / medium 5841 /
+    // high 5585 / max 8192 —— low 明显低于"不指定"，medium 甚至高于 high。
+    // 所以 UI 文案不再暗示"越大越强"，代码也只做"映射到合法值"。
+    //
+    // 开发者：把实际发出的**最后一份请求体**存进会话存档（可在会话 JSON 模式查看）。
+    // 默认关闭 —— 里面有完整提示词与工具定义，属于敏感内容，且每次运行都写盘。
+    debugStoreRequest: false,
     // thinkingBudget（思考预算 token 数）有真实读点：src/thinking.js
     // 在 Claude 兼容/部分网关方言下把它落成预算参数。没有 UI 入口（有意为之：
     // 绝大多数渠道不认这个参数），需要时手改 config.json 即可生效。

@@ -264,8 +264,14 @@ export async function chatCompletionWithRetry(args, retries = 2) {
  *    超时、abort、重试次数、计费、日志、fallback 模型都必须留在这里，
  *    否则会出现"Skill 悄悄多打一次 API"这种既难发现又烧钱的问题。
  *    所以 Skill 只能给函数（改 body / 给建议），重试动作由本函数执行。
+ *
+ * ── 开发者：onRequest 回调 ─────────────────────────────────────────────
+ *   `onRequest(body, meta)` 在**每一次真正发出请求前**被调用（重试会多次触发）。
+ *   meta = { baseUrl, model, attempt }。用于把实际请求体存进会话存档做排查。
+ *   调用方（orchestrator）负责判断 `api.debugStoreRequest` 开关并做脱敏 ——
+ *   本函数不知道 body 里有敏感内容，也不该知道。
  */
-export async function chatCompletion({ messages, tools = null, toolChoice = 'auto', temperature = null, signal = null, overrides = null, skillContext = null, maxTokens = 0 }) {
+export async function chatCompletion({ messages, tools = null, toolChoice = 'auto', temperature = null, signal = null, overrides = null, skillContext = null, maxTokens = 0, onRequest = null }) {
   const baseApi = overrides || effectiveApi();
   // 主调用路径才切"图片/视频专用模型"（见 specializedModelFor 注释）
   let api = baseApi;
@@ -368,8 +374,19 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
     else signal.addEventListener('abort', () => controller.abort(signal.reason ?? new Error('aborted')), { once: true });
   }
 
+  let postAttempts = 0;
   /** 发一次请求。返回 { ok, status, text, headers }，网络层错误直接抛。 */
   const post = async (body) => {
+    // 开发者回调：放在 post 内部 → 首发与降级重试**都会**触发，
+    // 拿到的永远是"真正发出去的那一份"（含 Skill/思考参数改写后的结果）。
+    if (typeof onRequest === 'function') {
+      try {
+        onRequest(body, { baseUrl: api.baseUrl, model: api.model, attempt: postAttempts + 1 });
+      } catch (error) {
+        skillManager.recordError('llm.on-request', error);
+      }
+    }
+    postAttempts += 1;
     const res = await fetch(joinUrl(api.baseUrl, '/chat/completions'), {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...authHeaders(api.apiKey, api.baseUrl, api.model) },
@@ -379,6 +396,7 @@ export async function chatCompletion({ messages, tools = null, toolChoice = 'aut
     const text = await res.text().catch(() => '');
     return { ok: res.ok, status: res.status, text, contentType: res.headers.get('content-type') || '' };
   };
+
 
   const baseBody = buildBaseBody();
   if (temp !== null && temp !== undefined && Number.isFinite(Number(temp))) baseBody.temperature = Number(temp);

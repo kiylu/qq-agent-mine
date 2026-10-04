@@ -250,6 +250,23 @@ function bindSettingsEvents(c) {
     state.config.tools = { enabled: true, overrides: {}, categories: { __replace__: {} } };
     renderSettings();});
 
+  // 清理开发者模式的请求体快照（无害：只抹 lastRequest 字段，不动会话记录）。
+  $('#btn-strip-snapshots')?.addEventListener('click', async () => {
+    if (!(await uiConfirm(
+      '确定清理所有历史会话里存过的请求体快照吗？\n\n' +
+      '这些快照只是排障时看的（端点、参数、工具清单），对机器人的实际行为没有任何影响。\n' +
+      '聊天记录、上下文、思考链、用量统计全部保留。\n\n' +
+      '正在运行的会话不会被清理。'
+    ))) return;
+    try {
+      const r = await api('/api/sessions/strip-request-snapshots', { method: 'POST' });
+      showAppAlert(`已清理 ${r?.cleaned ?? 0} 条快照（扫描 ${r?.scanned ?? 0} 个会话` +
+        `${r?.running ? `，跳过运行中 ${r.running} 个` : ''}）`);
+    } catch (e) {
+      showAppAlert('清理失败：' + String(e?.message ?? e));
+    }
+  });
+
   /** 实时更新提示词预览（旧版在前端拼静态模板，已改为后端同源组装） */
   function updatePromptPreview() {
     // 立即刷：后端按当前内存态组装（工具开关已同步写进 state.config.tools，
