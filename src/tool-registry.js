@@ -240,7 +240,7 @@ export const CATEGORY_META = {
   web: { name: '联网搜索', icon: '🌐', description: '搜索网页、抓取内容' },
   knowledge: { name: '知识库', icon: '📚', description: '检索本地知识库并注入上下文' },
   media: { name: '媒体理解', icon: '🎞️', description: '视频抽帧、图片标注等' },
-  system: { name: '系统反馈', icon: '⚙️', description: '向控制台反馈、结束会话等' }
+  system: { name: '系统反馈', icon: '⚙️', description: '向控制台反馈、结束本轮处理等' }
 };
 
 /** skillErrorText 转出，便于 UI/调用方不额外 import errors.js。 */

@@ -530,7 +530,7 @@ export class MemoryStore {
   formatSelfForPrompt(chatKey, { limit = 10 } = {}) {
     const list = loadSelf(chatKey);
     if (!list.length) return '';
-    const lines = ['【自身状态】以下是你自己需要跨轮/跨会话记住的事（目标、规则、待办、答案等）：'];
+    const lines = ['【自身状态】以下是你自己需要跨轮保留的事（未完成的目标、自己定的规则、待办、答案等）：'];
     for (const e of list.slice(-limit)) lines.push(`- ${e.content}`);
     return lines.join('\n');
   }

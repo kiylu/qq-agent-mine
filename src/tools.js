@@ -468,7 +468,7 @@ function registerAllTools() {
   registerTool({
     id: 'get_recent_messages',
     name: '查看历史消息',
-    description: '往前翻当前会话的更多历史消息（提示词里只带了最近一段；需要更早的上下文时用）。返回带 messageId（就是聊天记录里的 #数字），可用于引用或看图。消息文本出现 [合并转发聊天记录] 时，用 read_forward 展开看内容。',
+    description: '往前翻当前会话的更早历史消息（刚开的一段对话通常只带了最近几条；需要更早的上下文时用）。返回带 messageId（就是聊天记录里的 #数字），可用于引用或看图。消息文本出现 [合并转发聊天记录] 时，用 read_forward 展开看内容。',
     category: 'query',
     icon: '📜',
     parameters: {
@@ -556,7 +556,7 @@ function registerAllTools() {
   registerTool({
     id: 'get_chats',
     name: '查看可用会话',
-    description: '列出机器人参与的会话（chatKey、名字、最近消息时间）。跨会话发送（send_message 的 targetChatKey）前用它查目标。',
+    description: '列出机器人参与的会话（chatKey、名字、最近消息时间）。send_to（发送到指定会话）前用它查目标 chatKey。',
     category: 'query',
     icon: '📋',
     parameters: {
@@ -648,7 +648,7 @@ function registerAllTools() {
   registerTool({
     id: 'memory_append',
     name: '记录印象',
-    description: '记一条对群友的长期印象（下次运行会自动看到）。只记"以后和这个人打交道时用得上"的稳定印象：他的身份/关系、说话风格、爱玩的梗、雷点、常聊话题、别踩的坑。太临时的事情不要记。userId 必须填对方的 QQ 号（不知道就先调 get_active_members / get_recent_messages 查）；target 填备注名/群名片/昵称，用于展示。',
+    description: '记一条对群友的长期印象（之后每轮提示词的【记忆】段都会带上它）。只记"以后和这个人打交道时用得上"的稳定印象：他的身份/关系、说话风格、爱玩的梗、雷点、常聊话题、别踩的坑。太临时的事情不要记 —— 群里刚聊过的事你上文本来就还留着，不用记。userId 必须填对方的 QQ 号（不知道就先调 get_active_members / get_recent_messages 查）；target 填备注名/群名片/昵称，用于展示。',
     category: 'memory',
     icon: '🧠',
     parameters: {
@@ -677,7 +677,7 @@ function registerAllTools() {
   registerTool({
     id: 'remember_self',
     name: '记录自身状态',
-    description: '记录"你自己"需要跨轮/跨会话记住的私有状态：未完成的目标、你自己定下的规则（如海龟汤里你打算守的约定）、谜底/答案、还没做完的待办。与"对群友的印象"无关，那些用 memory_append。每次只记一条简明的事，重复内容不会重复写入。',
+    description: '记录"你自己"需要跨轮记住的私有状态：未完成的目标、你自己定下的规则（如海龟汤里你打算守的约定）、谜底/答案、还没做完的待办。会话被关闭时系统也会自动蒸馏一段写进来，所以正常聊天时不用每句都记 —— 只记那些"上文清零后接不回来"的关键事实。与"对群友的印象"无关，那些用 memory_append。每次只记一条简明的事，重复内容不会重复写入。',
     category: 'memory',
     icon: '🪞',
     parameters: {
@@ -822,8 +822,8 @@ function registerAllTools() {
 
   registerTool({
     id: 'finish',
-    name: '结束会话',
-    description: '明确结束本次处理（表示你看完了、决定了下一步）。看完不打算说话时调用它（summary 写一句给自己看的理由）；说完话想收尾时也可以调用。不调用也可以——直接结束文本输出同样代表结束。处于活跃期时，若判断话题已结束/偏离，也用它结束（reason 填"话题结束"）。',
+    name: '结束本轮',
+    description: '明确结束本次处理（表示你看完了、决定了下一步）。看完不打算说话时调用它（summary 写一句给自己看的理由）；说完话想收尾时也可以调用。不调用也可以——直接结束文本输出同样代表结束。注意它只结束你**这一轮**的发言，不代表对话结束：群里安静一段时间后你还会在同一段对话里被叫起来，上文也还在。处于活跃期时，若判断话题已结束/偏离，也用它结束（reason 填"话题结束"）。',
     category: 'system',
     icon: '✅',
     parameters: {
