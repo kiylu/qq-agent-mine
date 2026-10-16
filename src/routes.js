@@ -30,6 +30,12 @@ import { skillManager } from './skills/manager.js';
 // 只取目录常量（根目录解析集中在这里，别处不要各自 path.resolve 一份）。
 // plugin-loader 依赖很轻（仅 tool-registry），import 它不会形成循环。
 import { SKILL_DIRS } from './plugin-loader.js';
+import {
+  listMarkdownSkills, markdownSkillsConfig, getMarkdownSkill,
+  setMarkdownSkillEnabled, updateMarkdownSkillsSettings, saveMarkdownSkill,
+  deleteMarkdownSkill, reloadMarkdownSkills
+} from './markdown-skills.js';
+import { exportTrajectories } from './trajectory-export.js';
 import { getSkillConfig, setSkillConfig, setSkillEnabled, listConfiguredSkillIds } from './skills/config.js';
 import { availabilityOf, listTools, CATEGORY_META } from './tool-registry.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
@@ -933,6 +939,98 @@ export function createRoutes(deps) {
       }
     },
 
+    // ── Markdown 技能（L2）：声明式技能的管理接口 ──────────────────────
+    // 与 /api/skills（JS 技能）分开：本型只有提示词、没有 JS 入口，
+    // 开关也不写进 config.skills（那是 JS 技能的命名空间）。
+    {
+      method: 'GET', pattern: '/api/markdown-skills',
+      handler: async ({ res, json, url }) => {
+        const cfg = markdownSkillsConfig();
+        // 列表默认不带正文（省流量）；管理端要编辑时传 ?withBody=1 一次取全。
+        const withBody = url?.searchParams?.get('withBody') === '1';
+        const skills = listMarkdownSkills().map((s) => (
+          withBody ? { ...s, body: getMarkdownSkill(s.id, { withBody: true })?.body || '' } : s
+        ));
+        return json(res, 200, {
+          enabled: cfg.enabled,
+          indexMode: cfg.indexMode,
+          maxBodyChars: cfg.maxBodyChars,
+          allowAutoCreate: cfg.allowAutoCreate,
+          skills
+        });
+      }
+    },
+    {
+      // 功能级设置。必须排在 /:id 之前（'settings' 会被 :id 正则吃掉）。
+      method: 'POST', pattern: '/api/markdown-skills/settings',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = (await bodyOf(req)) || {};
+          const next = updateMarkdownSkillsSettings({
+            enabled: body.enabled,
+            indexMode: body.indexMode,
+            maxBodyChars: body.maxBodyChars,
+            allowAutoCreate: body.allowAutoCreate
+          });
+          return json(res, 200, { ok: true, settings: next });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      // 重扫磁盘（新放进来的 SKILL.md 立即出现）
+      method: 'POST', pattern: '/api/markdown-skills/reload',
+      handler: async ({ res, json }) => {
+        reloadMarkdownSkills();
+        return json(res, 200, { ok: true, skills: listMarkdownSkills() });
+      }
+    },
+    {
+      // 改单个技能：{ enabled } 切开关；{ name/description/triggers/body } 改内容。
+      // (?!settings$|reload$) 避免吃掉上面两条固定路径。
+      method: 'POST', pattern: /^\/api\/markdown-skills\/(?!settings$|reload$)([\w.-]{1,40})$/,
+      handler: async ({ req, res, json, match }) => {
+        const id = match[1];
+        try {
+          const body = (await bodyOf(req)) || {};
+          const cur = getMarkdownSkill(id, { withBody: true });
+
+          // 只传 enabled → 纯切开关（技能必须已存在）
+          if (body.enabled !== undefined && Object.keys(body).length === 1) {
+            if (!cur) return json(res, 404, { ok: false, error: '技能不存在' });
+            setMarkdownSkillEnabled(id, body.enabled);
+            return json(res, 200, { ok: true, skill: getMarkdownSkill(id) });
+          }
+
+          // 新建需要 name；改内容时缺省字段沿用现有值。
+          if (!cur && !String(body.name ?? '').trim()) {
+            return json(res, 404, { ok: false, error: '技能不存在（新建需要 name）' });
+          }
+          const saved = saveMarkdownSkill({
+            id,
+            name: body.name !== undefined ? body.name : cur.name,
+            description: body.description !== undefined ? body.description : (cur?.description || ''),
+            triggers: body.triggers !== undefined ? body.triggers : (cur?.triggers || []),
+            category: cur?.category || 'utility',
+            body: body.body !== undefined ? body.body : (cur?.body || '')
+          });
+          if (body.enabled !== undefined) setMarkdownSkillEnabled(id, body.enabled);
+          return json(res, 200, { ok: true, skill: saved });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+    {
+      method: 'DELETE', pattern: /^\/api\/markdown-skills\/([\w.-]{1,40})$/,
+      handler: async ({ res, json, match }) => {
+        const removed = deleteMarkdownSkill(match[1]);
+        if (!removed) return json(res, 404, { ok: false, error: '技能不存在' });
+        return json(res, 200, { ok: true });
+      }
+    },
+
     // ── Skill 管理 ─────────────────────────────────────────────────────
     // 统一开关入口：前端只改这里，模块内部一律读 skillManager。
     {
@@ -1403,7 +1501,9 @@ export function createRoutes(deps) {
         return json(res, 200, {
           ...memory.query(chatKey),
           members: memory.members(chatKey),
-          selfNotes: typeof memory.selfNotes === 'function' ? memory.selfNotes(chatKey) : []
+          selfNotes: typeof memory.selfNotes === 'function' ? memory.selfNotes(chatKey) : [],
+          // 自身记忆回收站（L4b）：被淘汰的条目，可在记忆页查看与恢复
+          evictedSelf: typeof memory.evictedSelf === 'function' ? memory.evictedSelf(chatKey) : []
         });
       }
     },
@@ -1446,6 +1546,32 @@ export function createRoutes(deps) {
       }
     },
     {
+      // 自身记忆回收站（L4b）：把被淘汰的条目恢复回 _self.json
+      method: 'POST', pattern: /^\/api\/memory-files\/(group|private)_(\d+)\/self\/restore$/,
+      handler: async ({ req, res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        let body = {};
+        try { body = (await bodyOf(req)) || {}; } catch { /* 无 body 视作空 */ }
+        const content = String(body.content ?? '').trim();
+        if (!content) return json(res, 400, { ok: false, error: 'content 不能为空' });
+        if (typeof memory.restoreSelf !== 'function') return json(res, 400, { ok: false, error: '当前版本不支持恢复' });
+        const entry = memory.restoreSelf(chatKey, content);
+        if (!entry) return json(res, 404, { ok: false, error: '回收站里没有这条' });
+        emit('memory-update', { chatKey });
+        return json(res, 200, { ok: true, entry });
+      }
+    },
+    {
+      // 清空回收站
+      method: 'DELETE', pattern: /^\/api\/memory-files\/(group|private)_(\d+)\/self\/evicted$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        if (typeof memory.clearEvictedSelf === 'function') memory.clearEvictedSelf(chatKey);
+        emit('memory-update', { chatKey });
+        return json(res, 200, { ok: true });
+      }
+    },
+    {
       method: 'POST', pattern: '/api/memory-files/consolidate',
       handler: async ({ req, res, json }) => {
         try {
@@ -1467,6 +1593,31 @@ export function createRoutes(deps) {
             .catch((error) => emit('memory-update', { chatKey, phase: 'consolidate-error', error: String(error?.message ?? error) }))
             .finally(() => orchestrator.consolidating.delete(chatKey));
           return json(res, 202, { ok: true, started: true });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
+      }
+    },
+
+    {
+      // 轨迹导出（L5）：把会话归档转成训练数据（JSONL），落 data/exports/。
+      // 默认脱敏（redact !== false）；要原始数据必须显式传 redact:false。
+      method: 'POST', pattern: '/api/export-trajectories',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = (await bodyOf(req)) || {};
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const r = exportTrajectories({
+            archivesDir: path.join(DATA_DIR, 'conversations', 'archive'),
+            outFile: path.join(DATA_DIR, 'exports', `trajectories-${stamp}.jsonl`),
+            format: body.format === 'openai' ? 'openai' : 'sharegpt',
+            chat: String(body.chat || ''),
+            limit: Math.max(0, Number(body.limit) || 0),
+            includeSystem: body.includeSystem !== false,
+            includeTools: body.includeTools === true,
+            redact: body.redact !== false
+          });
+          return json(res, 200, { ok: true, ...r });
         } catch (error) {
           return json(res, 400, { ok: false, error: String(error?.message ?? error) });
         }

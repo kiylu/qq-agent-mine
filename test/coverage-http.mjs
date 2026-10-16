@@ -624,6 +624,79 @@ c.section('7. 会话 / 存档 / 记忆');
     await sleep(300);
   });
 
+  await c.check('POST /api/memory-files/:key/self/restore：回收站恢复自身记忆', async () => {
+    // 造一条被淘汰的自身记忆：max=1 连写两条，第一条会被挤进回收站（L4b）
+    app.memory.appendSelf('group:456', '会被淘汰的自身状态', { max: 1 });
+    app.memory.appendSelf('group:456', '留下的自身状态', { max: 1 });
+    const before = await hit('GET', '/api/memory-files/group_456');
+    assert.ok(Array.isArray(before.data.evictedSelf), '应返回回收站数组');
+    assert.ok(before.data.evictedSelf.some((e) => e.content === '会被淘汰的自身状态'), '回收站应含被淘汰条目');
+
+    const bad = await hit('POST', '/api/memory-files/group_456/self/restore', { body: {} });
+    assert.equal(bad.status, 400, 'content 为空应 400');
+
+    const miss = await hit('POST', '/api/memory-files/group_456/self/restore', { body: { content: '不存在的内容' } });
+    assert.equal(miss.status, 404, '回收站里没有应 404');
+
+    const okr = await hit('POST', '/api/memory-files/group_456/self/restore', { body: { content: '会被淘汰的自身状态' } });
+    assert.equal(okr.status, 200, `恢复应 200，实际 ${okr.status}`);
+    assert.equal(okr.data.ok, true);
+  });
+
+  await c.check('DELETE /api/memory-files/:key/self/evicted：清空回收站', async () => {
+    // 再淘汰一条，确保回收站非空
+    app.memory.appendSelf('group:456', '再淘汰一条', { max: 1 });
+    app.memory.appendSelf('group:456', '再留一条', { max: 1 });
+    const r = await hit('DELETE', '/api/memory-files/group_456/self/evicted');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    const back = await hit('GET', '/api/memory-files/group_456');
+    assert.equal((back.data.evictedSelf || []).length, 0, '清空后回收站应为空');
+  });
+
+  await c.check('GET /api/markdown-skills：返回设置与技能列表', async () => {
+    const r = await hit('GET', '/api/markdown-skills');
+    assert.equal(r.status, 200);
+    assert.equal(typeof r.data.enabled, 'boolean');
+    assert.ok(Array.isArray(r.data.skills));
+  });
+
+  await c.check('POST /api/markdown-skills/settings：改功能级开关', async () => {
+    const r = await hit('POST', '/api/markdown-skills/settings', { body: { enabled: true, indexMode: 'prompt' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    assert.equal(r.data.settings.enabled, true);
+  });
+
+  await c.check('POST /api/markdown-skills/reload：重扫磁盘', async () => {
+    const r = await hit('POST', '/api/markdown-skills/reload');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+  });
+
+  await c.check('POST /api/markdown-skills/:id：新建 / 切开关 / 删除', async () => {
+    const save = await hit('POST', '/api/markdown-skills/cover-md-1', {
+      body: { name: '覆盖测试技能', description: '测试用', triggers: ['cover'], body: '步骤一' }
+    });
+    assert.equal(save.status, 200, `新建应 200，实际 ${save.status}`);
+    assert.equal(save.data.ok, true);
+    const off = await hit('POST', '/api/markdown-skills/cover-md-1', { body: { enabled: false } });
+    assert.equal(off.status, 200);
+    const del = await hit('DELETE', '/api/markdown-skills/cover-md-1');
+    assert.equal(del.status, 200);
+    assert.equal(del.data.ok, true);
+    const again = await hit('DELETE', '/api/markdown-skills/cover-md-1');
+    assert.equal(again.status, 404, '再删应 404');
+  });
+
+  await c.check('POST /api/export-trajectories：导出训练数据（默认脱敏）', async () => {
+    const r = await hit('POST', '/api/export-trajectories', { body: { format: 'sharegpt' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    assert.equal(typeof r.data.count, 'number');
+    assert.ok(r.data.outFile, '应返回输出文件路径');
+  });
+
   await c.check('GET /api/onebot/groups：拉群列表', async () => {
     const r = await hit('GET', '/api/onebot/groups');
     assert.equal(r.status, 200, `应 200，实际 ${r.status}`);

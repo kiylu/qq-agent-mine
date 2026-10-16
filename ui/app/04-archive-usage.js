@@ -478,6 +478,7 @@ function renderUsagePage(stats, st, prices) {
         <h2>用量与成本</h2>
         <div class="usage-days">
           ${USAGE_RANGES.map(([v, label]) => `<button class="btn btn-small" data-range="${v}">${label}</button>`).join('')}
+          <button class="btn btn-small" id="export-traj-btn" title="把会话归档导出为训练数据（JSONL，默认脱敏）">导出训练数据</button>
           <button class="btn btn-small" id="usage-refresh-btn" title="立即刷新">刷新</button>
         </div>
       </div>
@@ -555,6 +556,53 @@ function renderUsagePage(stats, st, prices) {
     });
   });
   $('#usage-refresh-btn')?.addEventListener('click', () => loadUsageView({ force: true }));
+
+  // 轨迹导出（L5）：把会话归档转成训练数据。默认脱敏 —— 只有明确取消勾选才写真实 QQ 号。
+  $('#export-traj-btn')?.addEventListener('click', async () => {
+    const overlay = modelModalShell({
+      head: '导出训练数据',
+      body: `
+        <div class="hint">把会话归档导出成 JSONL（训练用）。一条归档产出 0~1 条样本，
+          只保留"一问一答"，跳过只调工具没说话的轮次。</div>
+        <div class="field"><label>格式</label>
+          <select id="ex-format">
+            <option value="sharegpt">ShareGPT（conversations / from / value）</option>
+            <option value="openai">OpenAI messages</option>
+          </select></div>
+        <div class="field"><label>只导出某个会话（留空 = 全部）</label>
+          <input type="text" id="ex-chat" placeholder="group_123456 或 private_10001" /></div>
+        <div class="field"><label>最多取最近几份归档（0 = 不限）</label>
+          <input type="number" id="ex-limit" min="0" step="10" value="0" /></div>
+        <div class="field"><label><input type="checkbox" id="ex-redact" checked /> 脱敏 QQ 号 / 群号（建议保持勾选）</label></div>
+        <div class="hint">⚠️ 群聊归档含真实对话。取消脱敏会把 QQ 号、群号原样写进文件，请自行评估风险。<br />
+          导出后建议先从中挑几条做 few-shot 示例放进提示词（比微调便宜得多），攒够量再考虑微调。</div>`,
+      foot: `<button class="btn" id="ex-cancel">取消</button>
+             <button class="btn btn-primary" id="ex-run">开始导出</button>`
+    });
+    overlay.querySelector('#ex-cancel').addEventListener('click', () => closeModelModal(overlay));
+    overlay.querySelector('#ex-run').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = '导出中…';
+      try {
+        const r = await api('/api/export-trajectories', {
+          method: 'POST',
+          body: JSON.stringify({
+            format: $('#ex-format')?.value || 'sharegpt',
+            chat: ($('#ex-chat')?.value || '').trim(),
+            limit: Number($('#ex-limit')?.value) || 0,
+            redact: $('#ex-redact')?.checked !== false
+          })
+        });
+        closeModelModal(overlay);
+        alert(`导出完成：\n扫描归档 ${r.archives} 份，产出样本 ${r.count} 条\n文件：${r.outFile}`);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '开始导出';
+        alert(`导出失败：${err.message}`);
+      }
+    });
+  });
 
   // 行点击 → 弹明细
   box.querySelector('[data-table="days"]')?.addEventListener('click', (e) => {

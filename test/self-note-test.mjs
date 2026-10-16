@@ -16,9 +16,10 @@ const __testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-agent-self-'));
 process.env.QQ_AGENT_DATA_DIR = __testDataDir;
 
 const {
-  distillBuffer, collectAssistantText, parseDistillResult, DISTILL_SYSTEM_PROMPT
+  distillBuffer, collectAssistantText, parseDistillResult, parseDistillEntries,
+  DISTILL_SYSTEM_PROMPT, DISTILL_SYSTEM_PROMPT_BASIC
 } = await import('../src/conversation.js');
-const { MemoryStore } = await import('../src/memory.js');
+const { MemoryStore, initialSelfScore, effectiveSelfScore } = await import('../src/memory.js');
 
 const pass = [], fail = [];
 async function check(name, fn) {
@@ -247,6 +248,114 @@ await check('distillBuffer：模型返回空数组 → 不写入任何条目', a
   });
   assert.equal(written.length, 0);
   assert.equal(m.selfNotes(k).length, 0);
+});
+
+// ═══ 6. L4b 记忆权重机制 ═══
+await check('L4b：初始权重按来源区分', () => {
+  assert.equal(initialSelfScore({ kind: 'rule', ownerActive: true }), 5);
+  assert.equal(initialSelfScore({ kind: 'rule', ownerActive: false }), 2);
+  assert.equal(initialSelfScore({ kind: 'state', ownerActive: true }), 3);
+  assert.equal(initialSelfScore({ kind: 'state', ownerActive: false }), 1);
+});
+
+await check('L4b：有效权重随时间衰减（半衰期）', () => {
+  const now = Date.now();
+  const e = { score: 4, createdAt: now - 30 * 86400000, lastHitAt: 0 };
+  const s = effectiveSelfScore(e, now, 30);
+  assert.ok(Math.abs(s - 2) < 0.01, `30 天应衰减一半，实际 ${s}`);
+});
+
+await check('L4b：超上限时按权重淘汰 —— 高权重的 rule 不被普通 state 挤掉', () => {
+  const m = new MemoryStore();
+  const k = 'group:910';
+  m.appendSelf(k, '别每次都总结式收尾', { kind: 'rule', ownerActive: true });  // 5 分
+  for (let i = 0; i < 49; i++) m.appendSelf(k, `普通状态 ${i}`, { max: 40 });
+  const list = m.selfNotes(k);
+  assert.equal(list.length, 40, '应裁到 40 条');
+  assert.ok(list.some((e) => e.content === '别每次都总结式收尾'), '高权重 rule 必须留下');
+  assert.ok(!list.some((e) => e.content === '普通状态 0'), '低分的旧状态应先被淘汰');
+});
+
+await check('L4b：被淘汰的条目进回收站，可恢复', () => {
+  const m = new MemoryStore();
+  const k = 'group:911';
+  for (let i = 0; i < 45; i++) m.appendSelf(k, `状态 ${i}`, { max: 40 });
+  const evicted = m.evictedSelf(k);
+  assert.equal(evicted.length, 5, `应有 5 条进回收站，实际 ${evicted.length}`);
+  assert.ok(evicted.some((e) => e.content === '状态 0'), '最早那条应被淘汰进回收站');
+  const restored = m.restoreSelf(k, '状态 0');
+  assert.ok(restored && restored.content === '状态 0', '应能恢复');
+  assert.ok(m.selfNotes(k).some((e) => e.content === '状态 0'), '恢复后应回到自身状态');
+  assert.ok(!m.evictedSelf(k).some((e) => e.content === '状态 0'), '恢复后应从回收站移除');
+});
+
+await check('L4b：注入按权重取前 N —— 重要但旧的条目不被挤出窗口', () => {
+  const m = new MemoryStore();
+  const k = 'group:912';
+  m.appendSelf(k, '群友说别用总结式收尾', { kind: 'rule', ownerActive: true });  // 5 分
+  for (let i = 0; i < 12; i++) m.appendSelf(k, `琐碎状态 ${i}`);                  // 各 1 分
+  const text = m.formatSelfForPrompt(k, { limit: 5 });
+  assert.ok(text.includes('群友说别用总结式收尾'), '高权重条目必须在注入窗口里');
+  assert.ok(!text.includes('琐碎状态 0'), '低权重的旧条目应被挤出窗口');
+});
+
+await check('L4b：_evicted.json 不会被当成群友印象', () => {
+  const m = new MemoryStore();
+  const k = 'group:913';
+  for (let i = 0; i < 45; i++) m.appendSelf(k, `状态 ${i}`, { max: 40 });
+  m.append(k, 'memberImpression', '他爱发猫图', { userId: '12345', target: '小明' });
+  const members = m.members(k);
+  assert.equal(members.length, 1, '成员应只有小明');
+  assert.ok(!members.some((x) => String(x.name || '').includes('evicted')), '不应混入 _evicted');
+});
+
+// ═══ 7. L1 沉淀质量（纠正信号）═══
+await check('L1：默认蒸馏提示词包含"群友纠正"信号与 rule 说明', () => {
+  assert.ok(DISTILL_SYSTEM_PROMPT.includes('纠正'), '应含纠正信号');
+  assert.ok(DISTILL_SYSTEM_PROMPT.includes('rule'), '应说明 rule 类');
+});
+
+await check('L1：parseDistillEntries 解析 kind（并兼容纯字符串）', () => {
+  const out = parseDistillEntries(
+    '[{"kind":"rule","content":"别总结"},{"kind":"state","content":"谜底是镜子"},"旧格式"]'
+  );
+  assert.equal(out.length, 3);
+  assert.equal(out[0].kind, 'rule');
+  assert.equal(out[0].content, '别总结');
+  assert.equal(out[1].kind, 'state');
+  assert.equal(out[2].kind, 'state', '纯字符串按 state 处理');
+});
+
+await check('L1：distillBuffer 把 rule 条目按高权重写入', async () => {
+  const m = new MemoryStore();
+  const k = 'group:920';
+  const written = await distillBuffer({
+    memory: m, chatKey: k,
+    messages: [{ role: 'assistant', content: '群友嫌我总结太多，以后别这样' }],
+    ownerActive: true,
+    callModel: async () => ({ message: { content: '[{"kind":"rule","content":"别用总结式收尾"}]' } })
+  });
+  assert.equal(written.status, 'ok');
+  assert.equal(written.entries[0].kind, 'rule');
+  const note = m.selfNotes(k).find((e) => e.content === '别用总结式收尾');
+  assert.ok(note, '应写入自身状态');
+  assert.equal(note.kind, 'rule');
+  assert.equal(note.score, 5, '主人触发 + rule → 初始 5 分');
+});
+
+await check('L1：signals=false 时退回旧口径提示词', async () => {
+  const m = new MemoryStore();
+  let sawSystem = '';
+  await distillBuffer({
+    memory: m, chatKey: 'group:921',
+    messages: [{ role: 'assistant', content: '随便想想' }],
+    signals: false,
+    callModel: async ({ messages }) => {
+      sawSystem = messages[0].content;
+      return { message: { content: '[]' } };
+    }
+  });
+  assert.equal(sawSystem, DISTILL_SYSTEM_PROMPT_BASIC);
 });
 
 console.log(`\n自身记忆与蒸馏：通过 ${pass.length}，失败 ${fail.length}`);

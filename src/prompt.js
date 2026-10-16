@@ -18,6 +18,8 @@ import { getConfig, personaForChat } from './config.js';
 import { sliderToTier as _sliderToTier, tierToSlider as _tierToSlider, TIER_SLIDER_BANDS as _TIER_SLIDER_BANDS } from './tier-slider.js';
 export { _sliderToTier as sliderToTier, _tierToSlider as tierToSlider, _TIER_SLIDER_BANDS as TIER_SLIDER_BANDS };
 import { formatFullTime, formatShortTime } from './util.js';
+// Markdown 技能（L2）的稳定索引段。只读 config + 带缓存的目录扫描，不产生副作用。
+import { markdownSkillIndexText } from './markdown-skills.js';
 import { buildStickerContext, buildStickerStrategyHint } from './stickers.js';
 import { skillManager } from './skills/manager.js';
 
@@ -132,8 +134,10 @@ function memoryRules() {
     '- memory_append 只用来记录"对某位群友的长期印象"（他的说话风格、爱玩的梗、雷点、身份关系等稳定信息）；这些内容会自动出现在下方【记忆】里。',
     '- 不要记临时话题、临时想法；只记以后跟这个人打交道还用得上的。印象过时/不再准确时用 memory_remove 删掉。',
     '- 每次扫一眼【记忆】，只有自然相关才主动提起；不要为了用记忆而硬聊旧话题。',
-    '- remember_self 记录**你自己**的状态：正在进行的任务（如海龟汤还没结束、你出的谜底是什么）、你自己定下的规则或承诺、还没做完的待办。这些内容会出现在【自身状态】段。别把它当情绪日记，只记真正需要跨轮保留的。',
-    '- 【自身状态】还有个自动来源：每次会话关闭（沉默太久 / 轮次或体积超上限 / 管理员手动重开）时，系统会把你这段对话里没发出去的思考蒸馏成几条自身状态带回来。所以重要的暗牌答案、约定，即使你觉得上文还留着，主动用 remember_self 再落一次更稳。'
+    '- remember_self 记录**你自己**需要跨轮保留的内容，分两类：kind=state（当前状态：正在进行的任务如海龟汤还没结束、你出的谜底是什么、还没做完的待办）；kind=rule（以后该怎么做：你自己定下的规则或承诺，以及**群友纠正了你的说话方式/做法**时该记住的规矩，如"别每次都总结""别太正式"）。这些内容会出现在【自身状态】段。别把它当情绪日记，只记真正需要跨轮保留的。',
+    '- **群友明确纠正你时（"你 AI 味好重""别这么说话""话太多了"），用 kind=rule 记一条**——这类反馈比普通状态重要得多，会被优先保留。',
+    '- 【自身状态】还有个自动来源：每次会话关闭（沉默太久 / 轮次或体积超上限 / 管理员手动重开）时，系统会把你这段对话里没发出去的思考蒸馏成几条带回来。所以重要的暗牌答案、约定，即使你觉得上文还留着，主动用 remember_self 再落一次更稳。',
+    '- 【自身状态】条数有上限，超了会优先淘汰权重最低的（越久没被用到、越普通的越先走）；被淘汰的可在管理端「回收站」里恢复。所以记的时候要挑真正重要的。'
   ].join('\n');
 }
 
@@ -244,6 +248,8 @@ export function buildSystemPrompt({ persona, skillContext, extraSections = [] } 
       .replaceAll('{participation}', participationText(cfg.participation));
     const parts = [rendered, '', securityRules(), '', toolProtocol()];
     parts.push(...renderSkillSections(skillSections));
+    const mdIndexOverride = markdownSkillIndexText();
+    if (mdIndexOverride) parts.push('', mdIndexOverride);
     if (cfg.customRules && String(cfg.customRules).trim()) {
       parts.push('', '【管理员附加规则】', String(cfg.customRules).trim());
     }
@@ -282,6 +288,11 @@ export function buildSystemPrompt({ persona, skillContext, extraSections = [] } 
 
   // 注入 Skill 提示词片段（已按 priority 降序；一律排在核心规则之后）
   parts.push(...renderSkillSections(skillSections));
+
+  // Markdown 技能索引（L2）：只列 name + description（逐字节稳定）；正文**不在**前缀里 ——
+  // 模型按需用 load_skill 取，或命中触发词时作为尾部消息追加（不改前缀字节）。
+  const mdIndex = markdownSkillIndexText();
+  if (mdIndex) parts.push('', mdIndex);
 
   if (cfg.customRules && String(cfg.customRules).trim()) {
     parts.push('', '【管理员附加规则】', String(cfg.customRules).trim());

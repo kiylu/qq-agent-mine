@@ -1312,6 +1312,8 @@ async function loadModulePage(kind, { rescan = false } = {}) {
   if (rescan) await rescanSkills({ quiet: true });
   else await loadSkillsStatus();
   renderModulePage(kind);
+  // Markdown 技能（L2）只挂在技能页下面（插件页不放）。
+  if (kind === 'skill') await loadMarkdownSkillsBlock();
   // 页面整页重建（切页签 / 手动刷新）时内容淡入；卡片开关后的原地重绘不播
   uiEnter(box);
 }
@@ -1793,5 +1795,167 @@ async function refreshPromptPreview(overrides = null) {
   // 两处预览 DOM（设置-工具页 / 技能页右侧）都原地换文本，不整页重渲染
   $$('.prompt-preview-content').forEach((pre) => {
     pre.textContent = renderPromptPreviewText();
+  });
+}
+
+// ── Markdown 技能（L2）：技能页下方的独立区域 ──────────────────────────────
+//
+// 为什么用**同级容器**而不是塞进 #skills-page：
+//   技能页的 renderModulePage 会整块重写 #skills-page.innerHTML（切页签、开关后原地重绘），
+//   塞进去会被冲掉。放在同级容器里，技能页怎么重绘都不影响这块。
+// 开关状态一律来自后端 /api/markdown-skills，前端不自己推断。
+
+async function loadMarkdownSkillsBlock({ withBody = false } = {}) {
+  const pane = $('#skills-page');
+  if (!pane || !pane.parentNode) return;
+  let block = $('#md-skills-block');
+  if (!block) {
+    block = document.createElement('div');
+    block.id = 'md-skills-block';
+    block.className = 'usage-pane';
+    pane.parentNode.insertBefore(block, pane.nextSibling);
+  }
+  let data = null;
+  try { data = await api(`/api/markdown-skills${withBody ? '?withBody=1' : ''}`); } catch { data = null; }
+  block.innerHTML = renderMarkdownSkillsBlock(data);
+  bindMarkdownSkillsEvents(block, data);
+}
+
+function mdSkillRow(s) {
+  return `<div class="sk-row" data-md-id="${esc(s.id)}" style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
+    <div style="flex:1;min-width:260px">
+      <div><b>${esc(s.name)}</b>
+        <span class="muted">（${s.source === 'auto' ? '自动' : '手写'}）</span>
+        <span class="muted">· 命中 ${Number(s.hits) || 0} 次${s.lastHitAt ? ` · 最近 ${fmtTime(s.lastHitAt)}` : ''}</span>
+      </div>
+      <div class="muted">${esc(s.description || '（没有写说明）')}</div>
+      <div class="muted" style="font-size:11px">触发词：${esc((s.triggers || []).join('、') || '（无）')} · ${esc(s.relDir || '')}</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <label class="muted"><input type="checkbox" class="md-skill-toggle" ${s.enabled ? 'checked' : ''} /> 启用</label>
+      <button class="btn btn-small md-skill-edit">编辑</button>
+      <button class="btn btn-small md-skill-del">删除</button>
+    </div>
+  </div>`;
+}
+
+function renderMarkdownSkillsBlock(data) {
+  if (!data) {
+    return `<div class="usage-wrap"><div class="usage-head"><h2>Markdown 技能</h2></div>
+      <div class="hint">读取失败：后端没有提供 /api/markdown-skills（请确认版本）。</div></div>`;
+  }
+  const on = data.enabled === true;
+  const list = Array.isArray(data.skills) ? data.skills : [];
+  return `<div class="usage-wrap">
+    <div class="usage-head">
+      <h2>Markdown 技能（声明式）</h2>
+      <button class="btn btn-small" id="md-skill-add">＋ 新建</button>
+      <div class="usage-days"><button class="btn btn-small" id="md-skill-reload">重扫磁盘</button></div>
+    </div>
+    <div class="hint" style="margin-bottom:10px">
+      这类技能是<b>一份 <code>SKILL.md</code></b>（只有提示词、没有 JS），放在 <code>skills/&lt;id&gt;/SKILL.md</code> 或 <code>plugins/&lt;id&gt;/SKILL.md</code>。<br />
+      系统提示词里<b>只常驻名字和一句话说明</b>；正文按需加载（模型调 <code>load_skill</code>，或命中触发词时自动追加到末尾）——
+      所以技能库可以一直加而不占常驻 token，也不会打断前缀缓存。
+    </div>
+    <div class="sk-row" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:8px 0">
+      <label><input type="checkbox" id="md-enabled" ${on ? 'checked' : ''} /> 启用 Markdown 技能</label>
+      <label>索引方式
+        <select id="md-index-mode">
+          <option value="prompt" ${data.indexMode === 'prompt' ? 'selected' : ''}>写进系统提示词（推荐）</option>
+          <option value="tool" ${data.indexMode === 'tool' ? 'selected' : ''}>只用 list_skills 工具发现</option>
+        </select>
+      </label>
+      <label>正文字数上限 <input type="number" id="md-max-body" min="200" max="20000" step="100" value="${Number(data.maxBodyChars) || 4000}" style="width:96px" /></label>
+      <label><input type="checkbox" id="md-auto-create" ${data.allowAutoCreate ? 'checked' : ''} /> 允许模型自动创建（默认关）</label>
+    </div>
+    ${list.map(mdSkillRow).join('') || '<div class="empty-hint">还没有 Markdown 技能。点右上角「＋ 新建」，或直接把 <code>SKILL.md</code> 放进 <code>skills/&lt;id&gt;/</code>。</div>'}
+  </div>`;
+}
+
+function bindMarkdownSkillsEvents(block, data) {
+  const saveSettings = async (patch) => {
+    try {
+      await api('/api/markdown-skills/settings', { method: 'POST', body: JSON.stringify(patch) });
+      await loadMarkdownSkillsBlock();
+    } catch (e) { alert(`保存失败：${e.message}`); }
+  };
+  block.querySelector('#md-enabled')?.addEventListener('change', (e) => saveSettings({ enabled: e.target.checked }));
+  block.querySelector('#md-index-mode')?.addEventListener('change', (e) => saveSettings({ indexMode: e.target.value }));
+  block.querySelector('#md-max-body')?.addEventListener('change', (e) => saveSettings({ maxBodyChars: Number(e.target.value) }));
+  block.querySelector('#md-auto-create')?.addEventListener('change', (e) => saveSettings({ allowAutoCreate: e.target.checked }));
+  block.querySelector('#md-skill-reload')?.addEventListener('click', async () => {
+    try { await api('/api/markdown-skills/reload', { method: 'POST' }); await loadMarkdownSkillsBlock(); }
+    catch (e) { alert(`重扫失败：${e.message}`); }
+  });
+  block.querySelector('#md-skill-add')?.addEventListener('click', () => openMarkdownSkillModal(null));
+  block.querySelectorAll('.sk-row[data-md-id]').forEach((row) => {
+    const id = row.dataset.mdId;
+    const skill = (data?.skills || []).find((s) => s.id === id) || { id };
+    row.querySelector('.md-skill-toggle')?.addEventListener('change', async (e) => {
+      try {
+        await api(`/api/markdown-skills/${encodeURIComponent(id)}`, {
+          method: 'POST', body: JSON.stringify({ enabled: e.target.checked })
+        });
+        await loadMarkdownSkillsBlock();
+      } catch (err) { e.target.checked = !e.target.checked; alert(`切换失败：${err.message}`); }
+    });
+    row.querySelector('.md-skill-edit')?.addEventListener('click', async () => {
+      let full = skill;
+      try {
+        const all = await api('/api/markdown-skills?withBody=1');
+        full = (all.skills || []).find((s) => s.id === id) || skill;
+      } catch { /* 拿不到正文就只改元数据 */ }
+      openMarkdownSkillModal(full);
+    });
+    row.querySelector('.md-skill-del')?.addEventListener('click', async () => {
+      if (!(await uiConfirm(`删除 Markdown 技能「${skill.name || id}」？\n\n只会删掉它的 SKILL.md 文件，此操作不可撤销。`))) return;
+      try {
+        await api(`/api/markdown-skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        await loadMarkdownSkillsBlock();
+      } catch (err) { alert(`删除失败：${err.message}`); }
+    });
+  });
+}
+
+/** 新建 / 编辑 Markdown 技能（skill 为 null 表示新建）。 */
+function openMarkdownSkillModal(skill) {
+  const isEdit = !!(skill && skill.id);
+  const overlay = modelModalShell({
+    head: isEdit ? `编辑 Markdown 技能：${skill.name || skill.id}` : '新建 Markdown 技能',
+    body: `
+      <div class="field"><label>id（英文短标识，作为目录名）</label>
+        <input type="text" id="md-id" value="${esc(skill?.id || '')}" ${isEdit ? 'readonly' : ''} placeholder="turtle-soup" /></div>
+      <div class="field"><label>技能名（中文可读）</label>
+        <input type="text" id="md-name" value="${esc(skill?.name || '')}" placeholder="海龟汤主持" /></div>
+      <div class="field"><label>一句话说明（会常驻系统提示词，写清"什么时候用"）</label>
+        <input type="text" id="md-desc" value="${esc(skill?.description || '')}" /></div>
+      <div class="field"><label>触发词（逗号分隔；出现这些词时会自动加载正文）</label>
+        <input type="text" id="md-triggers" value="${esc((skill?.triggers || []).join(', '))}" /></div>
+      <div class="field"><label>正文（分步写清该怎么做）</label>
+        <textarea id="md-body" style="min-height:200px">${esc(skill?.body || '')}</textarea></div>
+      <div class="hint">正文<b>不进</b>系统提示词 —— 只在加载时才追加，所以写多长都不占常驻 token。</div>`,
+    foot: `<button class="btn" id="md-cancel">取消</button>
+           <button class="btn btn-primary" id="md-save">保存</button>`
+  });
+  overlay.querySelector('#md-cancel').addEventListener('click', () => closeModelModal(overlay));
+  overlay.querySelector('#md-save').addEventListener('click', async () => {
+    const id = ($('#md-id')?.value || '').trim();
+    const name = ($('#md-name')?.value || '').trim();
+    if (!/^[a-zA-Z0-9._-]{1,40}$/.test(id)) { alert('id 只允许字母/数字/._-，且不超过 40 个字符'); return; }
+    if (!name) { alert('技能名不能为空'); return; }
+    const triggers = ($('#md-triggers')?.value || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    try {
+      await api(`/api/markdown-skills/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          description: ($('#md-desc')?.value || '').trim(),
+          triggers,
+          body: $('#md-body')?.value || ''
+        })
+      });
+      closeModelModal(overlay);
+      await loadMarkdownSkillsBlock();
+    } catch (e) { alert(`保存失败：${e.message}`); }
   });
 }

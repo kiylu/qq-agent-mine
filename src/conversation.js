@@ -471,26 +471,65 @@ export function collectAssistantText(messages, { maxChars = 12000, reasonings = 
   return out;
 }
 
-export const DISTILL_SYSTEM_PROMPT = [
-  '你在帮一个群聊 AI 机器人做"会话关闭前的记忆归档"。',
-  '下面会给你这个机器人在刚刚结束的一段群聊会话中**没有发送到群里**的内部思考与正文。',
-  '请从中提炼出**需要跨会话记住的私有状态**，只包括：',
-  '1. 未完成的目标 / 正在做的事（例如"我在和群友玩海龟汤，还在猜"）；',
-  '2. 机器人自己定下的规则 / 承诺 / 约定；',
-  '3. 答案 / 关键事实（例如它其实知道自己出的谜底是什么）；',
-  '4. 明确写下的待办。',
+// 两类产出（state / rule）共用同一套输出要求。解析端对纯字符串也兼容，
+// 见 parseDistillEntries —— 模型不按新格式走时不会整段作废。
+const DISTILL_TAIL = [
   '要求：',
-  '- 每条用一句简明中文，客观陈述，不要用"我"以外的第一人称口吻解释。',
-  '- 只写**确实存在于思考里**的内容，禁止脑补、禁止写与人设/群友印象无关的废话。',
-  '- 最多 5 条。没有值得跨会话记住的内容时，只回复一个空 JSON 数组。',
-  '- **只输出 JSON 数组**，形如 ["...","..."]，不要任何额外文字、不要 markdown 代码块。'
+  '- 每条用一句简明中文、客观陈述，不要脑补，也不要写与人设/群友印象无关的废话。',
+  '- 只写**确实存在于思考里**的内容；没有值得跨会话记住的内容时，只回复一个空 JSON 数组。',
+  '- 最多 5 条。',
+  '- **只输出 JSON 数组**，每项形如 {"kind":"rule","content":"..."} 或 {"kind":"state","content":"..."}，',
+  '  不要任何额外文字、不要 markdown 代码块。'
 ].join('\n');
 
 /**
- * 解析蒸馏结果。返回 string[]（最多 5 条，去空、去重）。
- * 容错：模型可能包 markdown 代码块、可能给对象数组 —— 都尽量捞出来。
+ * 会话关闭蒸馏的系统提示（L1，默认口径）。
+ *
+ * 与旧口径的区别：除"机器人自己的状态"（state）外，还要求识别**可复用的做法**（rule）——
+ * 尤其把"群友纠正了它的说话方式"当成一级信号。QQ 群里"你 AI 味好重""别每次都总结"
+ * 这类反馈是常态，而它们原先**没有专门的捕获路径**，只能落成"对那个人的印象"或直接漏掉。
+ *
+ * rule 条目的初始权重更高、更不易被淘汰（见 memory.js 的 initialSelfScore）。
  */
-export function parseDistillResult(text, { max = 5 } = {}) {
+export const DISTILL_SYSTEM_PROMPT = [
+  '你在帮一个群聊 AI 机器人做"会话关闭前的记忆归档"。',
+  '下面会给你这个机器人在刚刚结束的一段群聊会话中**没有发送到群里**的内部思考与正文。',
+  '请从中提炼出**需要跨会话记住的内容**，分两类：',
+  '',
+  '【state】机器人自己的状态（"现在是什么状况"，会过期）：',
+  '- 未完成的目标 / 正在做的事（如"我在和群友玩海龟汤，还在猜"）；',
+  '- 答案 / 关键事实（如它其实知道自己出的谜底是什么）；',
+  '- 明确写下的待办。',
+  '',
+  '【rule】这类事以后该怎么做（"可复用的做法"，不过期）—— 出现下面任一信号就写一条：',
+  '- 群友纠正了它的说话方式 / 语气 / 格式 / 长度（"你 AI 味好重""别每次都总结""话太多了"）；',
+  '- 群友纠正了它的做法或步骤顺序；',
+  '- 它自己定下的规则 / 承诺 / 约定（如海龟汤里它打算守的约定）；',
+  '- 这次摸索出的非平凡技巧，或该避开的坑；',
+  '- 已有的规则被发现不适用 / 说错了 → 记下修正后的版本。',
+  '',
+  'rule 写成祈使句（如"回话别总用总结式收尾"），不要写成对某个人的评价。',
+  DISTILL_TAIL
+].join('\n');
+
+/** 关闭蒸馏的旧口径（只记自身状态）。`continuation.distillSignals=false` 时使用。 */
+export const DISTILL_SYSTEM_PROMPT_BASIC = [
+  '你在帮一个群聊 AI 机器人做"会话关闭前的记忆归档"。',
+  '下面会给你这个机器人在刚刚结束的一段群聊会话中**没有发送到群里**的内部思考与正文。',
+  '请从中提炼出**需要跨会话记住的私有状态**，只包括：',
+  '1. 未完成的目标 / 正在做的事；',
+  '2. 机器人自己定下的规则 / 承诺 / 约定；',
+  '3. 答案 / 关键事实；',
+  '4. 明确写下的待办。',
+  DISTILL_TAIL
+].join('\n');
+
+/**
+ * 解析蒸馏结果 → `[{ content, kind }]`（最多 max 条，去空、去重）。
+ * 容错：模型可能包 markdown 代码块、可能给对象数组、也可能仍按旧格式只给字符串
+ * —— 都尽量捞出来（拿不到 kind 时按 'state' 处理，不会整段作废）。
+ */
+export function parseDistillEntries(text, { max = 5 } = {}) {
   let s = String(text ?? '').trim();
   if (!s) return [];
   // 剥 markdown 代码围栏
@@ -506,14 +545,20 @@ export function parseDistillResult(text, { max = 5 } = {}) {
   const out = [];
   const seen = new Set();
   for (const item of arr) {
-    const content = typeof item === 'string' ? item : (item && typeof item.content === 'string' ? item.content : '');
+    const isObj = item && typeof item === 'object';
+    const content = typeof item === 'string' ? item : (isObj && typeof item.content === 'string' ? item.content : '');
     const t = String(content).trim().slice(0, 400);
     if (!t || seen.has(t)) continue;
     seen.add(t);
-    out.push(t);
+    out.push({ content: t, kind: isObj && item.kind === 'rule' ? 'rule' : 'state' });
     if (out.length >= max) break;
   }
   return out;
+}
+
+/** 兼容旧调用：只要内容（string[]）。 */
+export function parseDistillResult(text, { max = 5 } = {}) {
+  return parseDistillEntries(text, { max }).map((e) => e.content);
 }
 
 /**
@@ -533,6 +578,8 @@ export function parseDistillResult(text, { max = 5 } = {}) {
  * @param {Function} p.callModel  形如 (args) => Promise<{message,usage}>，通常传 chatCompletionWithRetry
  * @param {object} [p.api]        渠道配置（baseUrl/model，供日志）
  * @param {number} [p.maxChars]   蒸馏输入字符预算
+ * @param {boolean} [p.ownerActive] 本次会话是否由主人触发（决定 rule 条目初始权重）
+ * @param {boolean} [p.signals]     是否启用 L1 信号清单（false → 退回只记状态的旧口径）
  * @returns {Promise<{
  *   status: 'skipped-no-buffer' | 'skipped-empty-cot' | 'skipped-no-content' | 'ok',
  *   reason: string,
@@ -541,8 +588,11 @@ export function parseDistillResult(text, { max = 5 } = {}) {
  *   items: string[]
  * }>}
  */
-export async function distillBuffer({ memory, chatKey, messages, reasonings, callModel, maxChars = 12000 }) {
-  const no = (status, reason, cotChars = 0) => withItems({ status, reason, cotChars, itemCount: 0, items: [] });
+export async function distillBuffer({
+  memory, chatKey, messages, reasonings, callModel, maxChars = 12000,
+  ownerActive = false, signals = true
+}) {
+  const no = (status, reason, cotChars = 0) => withItems({ status, reason, cotChars, itemCount: 0, items: [], entries: [] });
   if (!memory || !chatKey || typeof callModel !== 'function') {
     return no('skipped-no-buffer', '参数不全（memory/chatKey/callModel 缺失）');
   }
@@ -554,22 +604,29 @@ export async function distillBuffer({ memory, chatKey, messages, reasonings, cal
   }
   const r = await callModel({
     messages: [
-      { role: 'system', content: DISTILL_SYSTEM_PROMPT },
+      // signals=false 时退回旧口径（只记状态），供 continuation.distillSignals 关闭时使用。
+      { role: 'system', content: signals ? DISTILL_SYSTEM_PROMPT : DISTILL_SYSTEM_PROMPT_BASIC },
       { role: 'user', content: `以下是这段会话的内部思考：\n\n${cot}` }
     ],
     maxTokens: 600,
     temperature: 0.2
   });
   const text = r?.message?.content;
-  const items = parseDistillResult(text);
+  const entries = parseDistillEntries(text);
   const written = [];
-  for (const content of items) {
-    const e = memory.appendSelf(chatKey, content);
-    if (e) written.push(e.content);
+  for (const { content, kind } of entries) {
+    // kind='rule' 的条目初始权重更高；ownerActive 由调用方传入（拿不到时按 false 降级）。
+    const e = memory.appendSelf(chatKey, content, { kind, ownerActive });
+    if (e) written.push({ content: e.content, kind: e.kind });
   }
   // 模型跑了但认为"没有值得记住的东西"——这是正常结果，不是错误。
   if (!written.length) return withItems(no('skipped-no-content', '蒸馏模型认为这段对话没有值得跨轮记住的内容', cot.length));
-  return withItems({ status: 'ok', reason: '', cotChars: cot.length, itemCount: written.length, items: written });
+  return withItems({
+    status: 'ok', reason: '', cotChars: cot.length,
+    itemCount: written.length,
+    items: written.map((x) => x.content),   // 兼容旧调用（string[]）
+    entries: written                          // 带 kind 的完整结果
+  });
 
   /**
    * 兼容旧的 string[] 调用方：把 summary 伪装成数组（带 .status/.reason 等属性）。

@@ -33,6 +33,17 @@ function selfFile(chatKey) {
   return path.join(chatDir(chatKey), '_self.json');
 }
 
+// 自身记忆的**回收站**（L4b）：淘汰不真删，落这里，管理端可查看与恢复。
+// ⚠️ 与 _self.json / _meta.json 一样，必须在扫描成员文件时跳过（见 #ensureChat）。
+function selfEvictedFile(chatKey) {
+  return path.join(chatDir(chatKey), '_evicted.json');
+}
+
+// 回收站上限（条）。它只是"误删保险"，不是第二份全量存储 —— 不设限会换一种方式膨胀。
+const SELF_EVICTED_KEEP = 200;
+// 自身记忆的默认半衰期（天）：权重每过这么久衰减一半。
+const SELF_HALF_LIFE_DAYS = 30;
+
 function memberFileName(userId, name = '') {
   if (String(userId ?? '').trim()) {
     const id = String(userId).trim();
@@ -64,13 +75,46 @@ function writeJson(file, value) {
   fs.renameSync(tmp, file);
 }
 
-/** 读自身记忆（数组：{ content, createdAt }）。损坏/不存在 → []。 */
+/** 读自身记忆（数组：{ content, createdAt, kind, score, lastHitAt }）。损坏/不存在 → []。 */
 function loadSelf(chatKey) {
   const raw = readJson(selfFile(chatKey), null);
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((e) => e && typeof e.content === 'string' && e.content.trim())
-    .map((e) => ({ content: String(e.content).slice(0, 400), createdAt: Number(e.createdAt) || 0 }));
+    .map((e) => ({
+      content: String(e.content).slice(0, 400),
+      createdAt: Number(e.createdAt) || 0,
+      // 旧数据没有这几个字段 → 补默认值（kind=state、score=1），无需迁移脚本。
+      kind: e.kind === 'rule' ? 'rule' : 'state',
+      score: Number(e.score) > 0 ? Number(e.score) : 1,
+      lastHitAt: Number(e.lastHitAt) || 0
+    }));
+}
+
+/**
+ * 自身记忆的**初始权重**：按来源给分，让"重要的纠正"不容易被淘汰。
+ *   kind='rule'（纠正/规则）× 主人触发 → 5
+ *   kind='rule' × 普通群友              → 2
+ *   kind='state'（普通状态）× 主人触发   → 3
+ *   kind='state' × 自身蒸馏/主动记录     → 1
+ * ownerActive 由 owner-identity 技能判定；该技能默认关，判定不到时按 false（降级）。
+ */
+export function initialSelfScore({ kind = 'state', ownerActive = false } = {}) {
+  if (kind === 'rule') return ownerActive ? 5 : 2;
+  return ownerActive ? 3 : 1;
+}
+
+/**
+ * 有效权重 = 初始权重 × 时间衰减（半衰期）。
+ * 读时计算、不写盘 —— 避免"每读一次改一次文件"的写放大，也不需要迁移旧数据。
+ */
+export function effectiveSelfScore(entry, now = Date.now(), halfLifeDays = SELF_HALF_LIFE_DAYS) {
+  const base = Number(entry?.score);
+  const score = base > 0 ? base : 1;
+  const last = Number(entry?.lastHitAt) || Number(entry?.createdAt) || now;
+  const ageDays = Math.max(0, (now - last) / 86400000);
+  const hl = Math.max(0.5, Number(halfLifeDays) || SELF_HALF_LIFE_DAYS);
+  return score * Math.pow(0.5, ageDays / hl);
 }
 
 function loadMember(chatKey, userId, name = '') {
@@ -155,7 +199,8 @@ export class MemoryStore {
       const map = new Map();
       try {
         for (const f of fs.readdirSync(chatDir(chatKey))) {
-          if (!f.endsWith('.json') || f === '_meta.json' || f === '_self.json') continue;
+          // _meta / _self / _evicted 是会话级元数据，不是"群友印象"文件，必须跳过。
+          if (!f.endsWith('.json') || f === '_meta.json' || f === '_self.json' || f === '_evicted.json') continue;
           const raw = readJson(path.join(chatDir(chatKey), f), null);
           if (!raw) continue;
           const key = raw.userId ? String(raw.userId) : `_n_${f}`;
@@ -491,21 +536,71 @@ export class MemoryStore {
 
   /**
    * 追加一条自身记忆。同样内容（去重后）不重复写。
-   * @returns {{content:string, createdAt:number}|null}
+   * @param {object} [opts]
+   * @param {number}  [opts.max]         条目上限（默认 40）
+   * @param {'state'|'rule'} [opts.kind]  'rule' = 纠正/规则（权重更高）
+   * @param {boolean} [opts.ownerActive]  本次是否由主人触发（决定初始权重）
+   * @param {number}  [opts.score]        显式指定初始权重（给了就不再按 kind 推算）
+   * @param {number}  [opts.halfLifeDays] 衰减半衰期（天）
+   * @returns {{content:string, createdAt:number, kind:string, score:number}|null}
    */
-  appendSelf(chatKey, content, { max = 40 } = {}) {
+  appendSelf(chatKey, content, { max = 40, kind = 'state', ownerActive = false, score, halfLifeDays } = {}) {
     const text = String(content ?? '').trim().slice(0, 400);
     if (!text) return null;
     const list = loadSelf(chatKey);
-    if (list.some((e) => e.content === text)) return list.find((e) => e.content === text);
-    const entry = { content: text, createdAt: Date.now() };
+    const dup = list.find((e) => e.content === text);
+    if (dup) return dup;
+    const entry = {
+      content: text,
+      createdAt: Date.now(),
+      kind: kind === 'rule' ? 'rule' : 'state',
+      score: Number(score) > 0 ? Number(score) : initialSelfScore({ kind, ownerActive }),
+      lastHitAt: 0
+    };
     list.push(entry);
-    // 只留最近 max 条：自身状态是"当前有效"的短清单，不是日志。
-    const trimmed = list.slice(-max);
-    try { writeJson(selfFile(chatKey), trimmed); } catch (error) {
+    // 超上限时按**有效权重**升序淘汰（同分先淘汰更旧的），而不是纯 FIFO ——
+    // 否则"主人明确纠正过"的条目会仅仅因为来得早而被后来的普通状态挤掉。
+    // 被淘汰的不真删，进回收站，管理端可查看与恢复。
+    const kept = list.length > max ? this.#evictLowestSelf(chatKey, list, max, halfLifeDays) : list;
+    try { writeJson(selfFile(chatKey), kept); } catch (error) {
       console.warn('[memory] 写自身记忆失败:', error?.message ?? error);
     }
     return entry;
+  }
+
+  /** 按有效权重保留前 max 条，其余写进回收站。返回保留后的数组。 */
+  #evictLowestSelf(chatKey, list, max, halfLifeDays) {
+    const now = Date.now();
+    const ranked = list
+      .map((e) => ({ e, s: effectiveSelfScore(e, now, halfLifeDays) }))
+      .sort((a, b) => (a.s !== b.s ? a.s - b.s : (a.e.createdAt || 0) - (b.e.createdAt || 0)));
+    const dropCount = Math.max(0, ranked.length - max);
+    const dropped = ranked.slice(0, dropCount).map((x) => x.e);
+    const kept = ranked.slice(dropCount).map((x) => x.e);
+    this.#pushEvictedSelf(chatKey, dropped);
+    return kept;
+  }
+
+  /** 把淘汰的自身记忆追加进回收站（保留最近 SELF_EVICTED_KEEP 条）。 */
+  #pushEvictedSelf(chatKey, entries) {
+    if (!Array.isArray(entries) || !entries.length) return;
+    try {
+      const prev = readJson(selfEvictedFile(chatKey), null);
+      const list = Array.isArray(prev) ? prev : [];
+      const now = Date.now();
+      for (const e of entries) {
+        list.push({
+          content: String(e.content ?? '').slice(0, 400),
+          kind: e.kind === 'rule' ? 'rule' : 'state',
+          score: Number(e.score) || 1,
+          createdAt: Number(e.createdAt) || 0,
+          evictedAt: now
+        });
+      }
+      writeJson(selfEvictedFile(chatKey), list.slice(-SELF_EVICTED_KEEP));
+    } catch (error) {
+      console.warn('[memory] 写自身记忆回收站失败:', error?.message ?? error);
+    }
   }
 
   /** 读全部自身记忆（新的在前）。 */
@@ -518,20 +613,74 @@ export class MemoryStore {
     return loadSelf(chatKey).length > 0;
   }
 
-  /** 清空某会话的自身记忆（随 removeChat 一起清；也可单独调）。 */
+  /** 清空某会话的自身记忆（随 removeChat 一起清；也可单独调）。回收站不受影响。 */
   clearSelf(chatKey) {
     try { fs.rmSync(selfFile(chatKey), { force: true }); return true; } catch { return false; }
+  }
+
+  /** 回收站：被淘汰的自身记忆（按淘汰时间倒序）。 */
+  evictedSelf(chatKey) {
+    const raw = readJson(selfEvictedFile(chatKey), null);
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((e) => e && typeof e.content === 'string' && e.content.trim())
+      .map((e) => ({
+        content: String(e.content).slice(0, 400),
+        kind: e.kind === 'rule' ? 'rule' : 'state',
+        score: Number(e.score) || 1,
+        createdAt: Number(e.createdAt) || 0,
+        evictedAt: Number(e.evictedAt) || 0
+      }))
+      .sort((a, b) => (b.evictedAt || 0) - (a.evictedAt || 0));
+  }
+
+  /**
+   * 从回收站恢复一条（按内容匹配，取最近淘汰的那条）。恢复后回到 `_self.json`，
+   * 权重沿用原值 —— 不因"被淘汰过"而永久降权。
+   * @returns {{content:string, createdAt:number}|null}
+   */
+  restoreSelf(chatKey, content) {
+    const text = String(content ?? '').trim();
+    if (!text) return null;
+    const raw = readJson(selfEvictedFile(chatKey), null);
+    const list = Array.isArray(raw) ? raw : [];
+    let idx = -1;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (String(list[i]?.content ?? '').trim() === text) { idx = i; break; }
+    }
+    if (idx < 0) return null;
+    const item = list[idx];
+    list.splice(idx, 1);
+    try { writeJson(selfEvictedFile(chatKey), list); } catch { /* ignore */ }
+    return this.appendSelf(chatKey, item.content, { kind: item.kind, score: item.score });
+  }
+
+  /** 清空回收站。 */
+  clearEvictedSelf(chatKey) {
+    try { fs.rmSync(selfEvictedFile(chatKey), { force: true }); return true; } catch { return false; }
   }
 
   /**
    * 渲染【自身状态】段（供提示词注入 —— 与【记忆】同属易变区，别放稳定前缀）。
    * 返回 '' 表示没有可注入的内容。
+   *
+   * ⚠️ 取的是**有效权重最高的前 limit 条**，不是"最近 limit 条"。存储上限（40）
+   * 远大于注入窗口（limit=10），只按时间取会让"重要但来得早"的纠正**还没被淘汰
+   * 就先不被注入**（等于白记）—— 这是权重机制里最关键的一环。
    */
-  formatSelfForPrompt(chatKey, { limit = 10 } = {}) {
+  formatSelfForPrompt(chatKey, { limit = 10, halfLifeDays } = {}) {
     const list = loadSelf(chatKey);
     if (!list.length) return '';
+    const now = Date.now();
+    const picked = list
+      .map((e) => ({ e, s: effectiveSelfScore(e, now, halfLifeDays) }))
+      .sort((a, b) => (b.s !== a.s ? b.s - a.s : (b.e.createdAt || 0) - (a.e.createdAt || 0)))
+      .slice(0, Math.max(1, Number(limit) || 10))
+      .map((x) => x.e)
+      // 注入顺序回到时间升序：读起来自然，且与旧行为一致（只改了"选哪几条"）。
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     const lines = ['【自身状态】以下是你自己需要跨轮保留的事（未完成的目标、自己定的规则、待办、答案等）：'];
-    for (const e of list.slice(-limit)) lines.push(`- ${e.content}`);
+    for (const e of picked) lines.push(`- ${e.content}`);
     return lines.join('\n');
   }
 

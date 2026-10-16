@@ -29,6 +29,7 @@ import { skillManager } from './skills/manager.js';
 import { getToolAvailability } from './tool-registry.js';
 import { rescueUnsentReply } from './reply-rescue.js';
 import { ConversationStore, resolveSilenceMs, sameToolNames, distillBuffer, slimHistoricalMedia } from './conversation.js';
+import { matchMarkdownSkills, renderMarkdownSkillBody, recordMarkdownSkillHit } from './markdown-skills.js';
 import { logger } from './logger.js';
 
 export class Orchestrator {
@@ -988,7 +989,8 @@ export class Orchestrator {
       // ②P2：关闭前把思考链蒸馏成"自身状态"（fire-and-forget，不阻塞本轮）。
       // 关闭是唯一握有完整 CoT 的时刻 —— 不蒸馏，海龟汤的谜底就永久丢了。
       if (prevBuf) {
-        this.#distillAndClose(chatKey, prevBuf, freshReason);
+        // ownerActive：本次会话是否由主人触发 —— 决定蒸馏出的 rule 条目初始权重（L4b）。
+        this.#distillAndClose(chatKey, prevBuf, freshReason, Boolean(ownerPersona));
       }
       messages = [
         { role: 'system', content: systemPrompt },
@@ -1011,6 +1013,23 @@ export class Orchestrator {
       skillManager.recordError('before-llm-messages', error);
     }
 
+    // ── Markdown 技能（L2）：触发词命中 → 正文作为**尾部消息**追加 ──
+    // 铁律二：只追加、不改既有字节，所以不破前缀缓存。
+    // 只按"本轮新来的触发消息"匹配（不是整段 prompt，否则会被历史里的旧消息误触发）；
+    // 已经在 messages 里出现过的技能不重复追加，否则每轮都塞一遍、白烧 token。
+    try {
+      const triggerText = (Array.isArray(triggerEntries) ? triggerEntries : [])
+        .map((e) => String(e?.text ?? '')).join('\n');
+      for (const sk of matchMarkdownSkills(triggerText, { limit: 1 })) {
+        const marker = `【技能：${sk.name}】`;
+        if (messages.some((m) => typeof m.content === 'string' && m.content.includes(marker))) continue;
+        messages.push({ role: 'system', content: renderMarkdownSkillBody(sk) });
+        recordMarkdownSkillHit(sk.id);
+      }
+    } catch (error) {
+      skillManager.recordError('markdown-skill', error);
+    }
+
     // JSON 模式需要看到输入给模型的完整 messages（去工具之前）
     session.inputMessages = structuredClone(messages.map((m) => ({ role: m.role, content: m.content })));
     this.sessions.update(session.id);
@@ -1028,6 +1047,9 @@ export class Orchestrator {
       session,
       reminders: this.reminders,
       videoReader: this.videoReader,
+      // 主人是否在场（owner-identity 技能判定；该技能默认关 → 恒为 false）。
+      // 工具据此决定写入自身记忆时的初始权重（L4b）：主人触发的条目更不易被淘汰。
+      ownerActive: Boolean(ownerPersona),
       emit: (type, payload) => this.emit(type, payload)
     };
 
@@ -1518,7 +1540,7 @@ export class Orchestrator {
    * 排查只能靠猜 _self.json 是否存在）。改成 logger 后**无论成败都有一条**，
    * 落盘 + 控制台日志页都能看到。
    */
-  #distillAndClose(chatKey, buffer, reason) {
+  #distillAndClose(chatKey, buffer, reason, ownerActive = false) {
     this.conversation.clear(chatKey, { archive: true, reason });
     const cfg = getConfig();
     const contCfg = cfg.store?.continuation || {};
@@ -1545,6 +1567,8 @@ export class Orchestrator {
       messages,
       reasonings,
       maxChars,
+      ownerActive,
+      signals: contCfg.distillSignals !== false,
       callModel: (args) => chatCompletionWithRetry(args, 1)
     }).then((res) => {
       // distillBuffer 现在返回结果摘要（status/reason/cotChars/itemCount/items）。

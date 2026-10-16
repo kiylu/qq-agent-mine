@@ -174,6 +174,15 @@ async function loadMemoryDetail(chatKey) {
     const selfHtml = selfNotes.length
       ? `<details class="collapsible mem-fold"><summary><span class="mem-who">🪞 自身状态（${selfNotes.length} 条）</span></summary><div class="coll-body">${esc(selfNotes.map((e) => `- ${e.content}`).join('\n'))}</div></details>`
       : '';
+    // 自身记忆回收站（L4b）：自身状态超出上限时按权重淘汰的条目，可恢复 —— 误删保险。
+    const evicted = Array.isArray(mem.evictedSelf) ? mem.evictedSelf : [];
+    const evictedHtml = evicted.length
+      ? `<details class="collapsible mem-fold"><summary><span class="mem-who">🗄 已清理（${evicted.length} 条）</span><span class="muted">超上限时按权重淘汰的自身状态，可恢复</span></summary><div class="coll-body">${evicted.map((e, i) => `
+          <div class="mem-evicted-row" style="display:flex;gap:8px;align-items:flex-start;padding:3px 0">
+            <div style="flex:1">${esc(e.content)}</div>
+            <button class="btn btn-small mem-restore-self" data-idx="${i}">恢复</button>
+          </div>`).join('')}<div style="margin-top:8px"><button class="btn btn-small" id="mem-clear-evicted">清空回收站</button></div></div></details>`
+      : '';
     // 查看思维链（本次新增）：展示机器人"自己想过什么"的完整 messages。
     // 注意这是**活跃缓冲**里的内容（跨轮保留的思考链），不是单条会话记录 ——
     // 关掉会话后缓冲清空，这里就空了（历史可去会话页看单条记录）。
@@ -200,6 +209,7 @@ async function loadMemoryDetail(chatKey) {
       ${membersHtml}
       ${thoughtsHtml}
       ${selfHtml}
+      ${evictedHtml}
       ${rows || '<div class="muted" style="padding:10px">还没有任何群友印象（可点右上角「＋ 添加印象」手动记，或点「整理本群记忆」让模型从聊天记录里提炼）。</div>'}
     `;
     // 思维链惰性加载：展开时才请求（缓冲可能很大，不该在打开记忆页时就拉）。
@@ -221,6 +231,33 @@ async function loadMemoryDetail(chatKey) {
         }
       });
     }
+    // 自身记忆回收站：恢复 / 清空（L4b）
+    $$('.mem-restore-self', detail).forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const item = evicted[Number(btn.dataset.idx)];
+        if (!item) return;
+        btn.disabled = true;
+        try {
+          await api(`/api/memory-files/${encodeURIComponent(chatKey.replace(':', '_'))}/self/restore`, {
+            method: 'POST',
+            body: JSON.stringify({ content: item.content })
+          });
+          await loadMemoryDetail(chatKey);
+        } catch (err) {
+          btn.disabled = false;
+          alert(`恢复失败：${err.message}`);
+        }
+      });
+    });
+    $('#mem-clear-evicted')?.addEventListener('click', async () => {
+      if (!(await uiConfirm('清空回收站？清空后这些自身状态将无法恢复。'))) return;
+      try {
+        await api(`/api/memory-files/${encodeURIComponent(chatKey.replace(':', '_'))}/self/evicted`, { method: 'DELETE' });
+        await loadMemoryDetail(chatKey);
+      } catch (err) {
+        alert(`清空失败：${err.message}`);
+      }
+    });
     const loadMembersBtn = $('#mem-load-members-btn');
     if (loadMembersBtn) loadMembersBtn.addEventListener('click', () => loadGroupMembers(chatId, chatKey));
     $$('.mem-edit-imp', detail).forEach((el) => {

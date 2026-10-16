@@ -27,6 +27,9 @@ import { SKILL_ERROR, skillErrorText } from './skills/errors.js';
 // 默认用全局 SkillManager 单例：见下面 getToolAvailability 里的说明。
 // 无循环依赖 —— manager.js 只 import registry/capabilities/config/errors，不碰本文件。
 import { skillManager as defaultSkillManager } from './skills/manager.js';
+// Markdown 技能（L2）的总开关 —— 与 send_to 同理，在可用性层拦，
+// 关闭时模型**连工具都看不见**（而不是看得见却调用失败）。
+import { isMarkdownSkillsEnabled, isMarkdownAutoCreateAllowed } from './markdown-skills.js';
 
 const registry = new Map();
 
@@ -185,6 +188,15 @@ export function getToolAvailability(toolId, context = {}) {
   // 在可用性层拦（而不是只靠描述提示）—— 关闭时模型连工具都看不见。
   if (def.id === 'send_to' && toolsCfg.crossChatSend !== true) {
     return deny('tool-disabled', '跨会话发送未开启（设置 → 工具与技能）');
+  }
+
+  // 5.6) Markdown 技能（L2）：总开关关闭时，加载/列举类工具一并不可见。
+  if ((def.id === 'load_skill' || def.id === 'list_skills') && !isMarkdownSkillsEnabled()) {
+    return deny('md-skills-disabled', 'Markdown 技能未开启（设置 → 工具与技能）');
+  }
+  // 自动创建默认关：模型不能用 remember_skill 自己写技能（留给后台评审驱动）。
+  if (def.id === 'remember_skill' && !isMarkdownAutoCreateAllowed()) {
+    return deny('md-skills-no-auto-create', '未开启「允许自动创建 Markdown 技能」');
   }
 
   // 6) 运行期依赖

@@ -326,6 +326,12 @@ export const DEFAULT_CONFIG = {
       distillOnClose: true,
       // 蒸馏输入（buffer 里 assistant 文本）的字符预算 —— 防止一次蒸馏塞爆小模型。
       distillMaxChars: 12000,
+      // 蒸馏信号清单（L1）：让模型额外识别"群友纠正 / 以后该怎么做"这类信号，
+      // 产出 kind='rule' 的条目（权重更高、更不易被淘汰）。关掉则退回旧口径（只记状态）。
+      distillSignals: true,
+      // 自身记忆的衰减半衰期（天，L4b）：权重每过这么久衰减一半。
+      // 只影响"注入取哪几条"与"超上限淘汰谁"，不影响已存内容。
+      selfHalfLifeDays: 30,
       // 媒体瘦身（②P3）：延续轮复用历史前缀时，把 base64 图片/视频换成文字占位。
       // 图片（尤其 base64）每轮重传是实打实的 token 大头，换占位后体积收敛、
       // 前缀也从此稳定。代价：切换那一刻前缀字节变了，当轮缓存会失效一次 ——
@@ -414,6 +420,16 @@ export const DEFAULT_CONFIG = {
   // 形状：{ [skillId]: { enabled: boolean, ...该 Skill 自己的设置 } }
   // 这里只存用户改过的值；默认值来自各 Skill 的 skill.json → settings。
   skills: {},
+  // Markdown 技能（L2）：**声明式**技能（skills|plugins/<id>/SKILL.md，只有提示词）。
+  // 与上面 skills{} 分开存 —— 那是 JS 技能的命名空间，由 skills/config.js 独占。
+  // 索引随会话边界刷新（系统提示词在会话内逐字节复用），所以增删技能不会当场破缓存。
+  markdownSkills: {
+    enabled: false,          // 总开关，默认关（会改行为的功能不默认开）
+    indexMode: 'prompt',     // 'prompt' = 索引进系统提示词；'tool' = 只靠 list_skills 工具发现
+    maxBodyChars: 4000,      // 单个技能正文注入上限（字符）
+    allowAutoCreate: false,  // 允许模型用 remember_skill 自己写技能（留待后台评审驱动）
+    items: {}                // { [skillId]: { enabled: boolean } }
+  },
   // 扩展热重载：把自定义的插件/skill 目录放进 plugins/ 或 skills/ 后**自动生效**，无需重启。
   // 默认开 —— 这正是"放进去就能用"的体验来源。
   // ⚠️ 安全含义：等价于"任意落地的 JS 会被执行"。共享机器 / 只跑固定版本时建议关掉。

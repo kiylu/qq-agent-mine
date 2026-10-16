@@ -18,6 +18,10 @@ import { holidayOn, upcomingHoliday } from './holidays.js';
 import { compressImage } from './image-compress.js';
 import { localStickerPath } from './sticker-manager.js';
 import { isGifBuffer, gifToVideoDataUrl, resolveGifRoute } from './gif-to-video.js';
+import {
+  listMarkdownSkills, getMarkdownSkill, renderMarkdownSkillBody,
+  recordMarkdownSkillHit, saveMarkdownSkill
+} from './markdown-skills.js';
 
 /** 当前配置的 GIF 选路（vision/video 开关组合，规则矩阵见 resolveGifRoute 注释）。 */
 function currentGifRoute() {
@@ -677,20 +681,30 @@ function registerAllTools() {
   registerTool({
     id: 'remember_self',
     name: '记录自身状态',
-    description: '记录"你自己"需要跨轮记住的私有状态：未完成的目标、你自己定下的规则（如海龟汤里你打算守的约定）、谜底/答案、还没做完的待办。会话被关闭时系统也会自动蒸馏一段写进来，所以正常聊天时不用每句都记 —— 只记那些"上文清零后接不回来"的关键事实。与"对群友的印象"无关，那些用 memory_append。每次只记一条简明的事，重复内容不会重复写入。',
+    description: '记录"你自己"需要跨轮记住的内容，两类：① kind=state（默认）—— 当前状态：未完成的目标、谜底/答案、还没做完的待办；② kind=rule —— 以后该怎么做：你自己定下的规则/承诺（如海龟汤里打算守的约定），或**群友纠正了你的说话方式/做法**（"别每次都总结""太正式了"这类，务必记成 rule）。会话被关闭时系统也会自动蒸馏一段写进来，所以正常聊天时不用每句都记 —— 只记那些"上文清零后接不回来"的关键事实。与"对群友的印象"无关，那些用 memory_append。每次只记一条简明的事，重复内容不会重复写入。',
     category: 'memory',
     icon: '🪞',
     parameters: {
       type: 'object',
       properties: {
-        content: { type: 'string', description: '要记住的自身状态（简明一句，≤200字）' }
+        content: { type: 'string', description: '要记住的内容（简明一句，≤200字）' },
+        kind: {
+          type: 'string',
+          enum: ['state', 'rule'],
+          description: 'state=当前状态（默认）；rule=以后该怎么做。rule 权重更高、更不易被淘汰，且写成祈使句'
+        }
       },
       required: ['content']
     },
     async execute(ctx, args) {
       const content = String(args.content ?? '').trim();
       if (!content) return err('content 不能为空');
-      const entry = ctx.memory.appendSelf(ctx.chatKey, content);
+      const kind = args.kind === 'rule' ? 'rule' : 'state';
+      // ownerActive 由运行期注入（主人是否在场）—— 决定初始权重，主人纠正的更不易被淘汰。
+      const entry = ctx.memory.appendSelf(ctx.chatKey, content, {
+        kind,
+        ownerActive: ctx.ownerActive === true
+      });
       return ok({ saved: Boolean(entry), entry });
     }
   });
@@ -740,6 +754,86 @@ function registerAllTools() {
         content: String(args.content ?? '').trim()
       });
       return ok({ removed });
+    }
+  });
+
+  // ── Markdown 技能（L2）：声明式技能的按需加载 ──
+  // 索引只列 name+description；正文靠这两个工具按需取（渐进式披露，不占常驻 token）。
+  // 可用性由 tool-registry 按 markdownSkills.enabled 统一判定，这里不做开关判断。
+  registerTool({
+    id: 'load_skill',
+    name: '加载技能',
+    description: '加载一个"可加载技能"的完整正文。系统提示里【可加载技能】只列了名字和一句话说明；判断当前场景用得上时，用这个名字取正文，然后按正文里的步骤做。不要凭名字猜内容，也不要在无关时加载。',
+    category: 'system',
+    icon: '📗',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '技能名字（与【可加载技能】里列的一致）' }
+      },
+      required: ['name']
+    },
+    async execute(_ctx, args) {
+      const want = String(args.name ?? '').trim();
+      if (!want) return err('name 不能为空');
+      const all = listMarkdownSkills();
+      const hit = all.find((s) => s.name === want) || all.find((s) => s.id === want);
+      if (!hit) {
+        const names = all.map((s) => s.name).slice(0, 20);
+        return err(`没有名为「${want}」的技能。现有：${names.join('、') || '（无）'}`);
+      }
+      const full = getMarkdownSkill(hit.id, { withBody: true });
+      if (!full) return err(`技能「${want}」读不到正文`);
+      recordMarkdownSkillHit(hit.id);
+      return ok({ name: full.name, body: full.body });
+    }
+  });
+
+  registerTool({
+    id: 'list_skills',
+    name: '列出技能',
+    description: '列出当前可加载的技能（只有名字和一句话说明）。仅在系统提示里没有列出技能、但你想确认有哪些可用时才调用。',
+    category: 'system',
+    icon: '📚',
+    parameters: { type: 'object', properties: {} },
+    async execute() {
+      const all = listMarkdownSkills().filter((s) => s.enabled);
+      return ok({ skills: all.map((s) => ({ name: s.name, description: s.description })) });
+    }
+  });
+
+  registerTool({
+    id: 'remember_skill',
+    name: '记录技能',
+    description: '把一个**可复用的做法**写成技能，供以后遇到同类场景时加载。只在真的摸索出了值得复用的步骤时才写（如"怎么主持一局海龟汤"）；一次性的任务不要写。写了之后自己会出现在【可加载技能】里。',
+    category: 'memory',
+    icon: '🧩',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '英文短标识（字母/数字/._-，如 turtle-soup），用于文件名' },
+        name: { type: 'string', description: '技能名（中文可读，如「海龟汤主持」）' },
+        description: { type: 'string', description: '一句话说明这个技能干什么、什么时候用' },
+        triggers: { type: 'string', description: '触发词，逗号分隔（如「海龟汤,猜谜」）；出现这些词时可自动加载' },
+        body: { type: 'string', description: '技能正文：分步写清该怎么做（Markdown）' }
+      },
+      required: ['id', 'name', 'body']
+    },
+    async execute(_ctx, args) {
+      try {
+        const saved = saveMarkdownSkill({
+          id: args.id,
+          name: args.name,
+          description: args.description,
+          triggers: String(args.triggers ?? '').split(/[,，]/),
+          category: 'utility',
+          body: args.body,
+          source: 'auto'
+        });
+        return ok({ saved: true, id: saved.id, name: saved.name });
+      } catch (error) {
+        return err(String(error?.message ?? error));
+      }
     }
   });
 
