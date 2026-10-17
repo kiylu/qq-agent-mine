@@ -113,6 +113,10 @@
       <span class="ext-subitem-title">插件</span>
       <span class="ext-subitem-desc">确定性型 · 条件满足必执行</span>
     </button>
+    <button class="ext-subitem" data-sub-tab="autolearn">
+      <span class="ext-subitem-title">自动学习</span>
+      <span class="ext-subitem-desc">后台复盘 · 自己攒记忆与技能</span>
+    </button>
   </div>
 
   <main id="layout">
@@ -173,6 +177,13 @@
          所以分成两页各自成组 —— 混在一页里既看不出类型，也数不清各有多少。 -->
     <section id="view-plugins" class="view">
       <div id="plugins-page" class="usage-pane"></div>
+    </section>
+
+    <!-- 自动学习视图（L3）：后台评审的开关 + 它产出的 Markdown 技能。
+         单独成页是因为语义不同：「技能」页放的是**人写的 JS 扩展**（注册工具、能执行动作），
+         这里放的是**模型自己攒的**记忆与做法（只有提示词），混在一起会让人分不清谁写的。 -->
+    <section id="view-autolearn" class="view">
+      <div id="autolearn-page" class="usage-pane"></div>
     </section>
 
     <!-- 设置视图 -->

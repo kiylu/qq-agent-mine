@@ -689,6 +689,24 @@ c.section('7. 会话 / 存档 / 记忆');
     assert.equal(again.status, 404, '再删应 404');
   });
 
+  await c.check('GET /api/auto-learn：返回自动学习设置与统计', async () => {
+    const r = await hit('GET', '/api/auto-learn');
+    assert.equal(r.status, 200);
+    assert.equal(typeof r.data.settings, 'object');
+    assert.equal(r.data.settings.enabled, false, '默认必须关');
+    assert.equal(typeof r.data.stats, 'object');
+  });
+
+  await c.check('POST /api/auto-learn/settings：改开关与间隔', async () => {
+    const r = await hit('POST', '/api/auto-learn/settings', { body: { enabled: true, intervalTurns: 6 } });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    assert.equal(r.data.settings.enabled, true);
+    assert.equal(r.data.settings.intervalTurns, 6);
+    // 收尾：关回去，别把测试状态留给后面的用例
+    await hit('POST', '/api/auto-learn/settings', { body: { enabled: false } });
+  });
+
   await c.check('POST /api/export-trajectories：导出训练数据（默认脱敏）', async () => {
     const r = await hit('POST', '/api/export-trajectories', { body: { format: 'sharegpt' } });
     assert.equal(r.status, 200);

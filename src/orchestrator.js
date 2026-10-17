@@ -30,6 +30,7 @@ import { getToolAvailability } from './tool-registry.js';
 import { rescueUnsentReply } from './reply-rescue.js';
 import { ConversationStore, resolveSilenceMs, sameToolNames, distillBuffer, slimHistoricalMedia } from './conversation.js';
 import { matchMarkdownSkills, renderMarkdownSkillBody, recordMarkdownSkillHit } from './markdown-skills.js';
+import { reviewConversation, autoLearnConfig } from './auto-review.js';
 import { logger } from './logger.js';
 
 export class Orchestrator {
@@ -59,6 +60,7 @@ export class Orchestrator {
     this.verifiedWakes = new Set();    // 本轮 wake 由 onIncoming 触发判定排定的 chatKey（区别于 drain 等机械重排）
     this.consolidating = new Set();    // 正在整理记忆的 chatKey
     this.distilling = new Set();       // 正在蒸馏自身状态的 chatKey（②P2，防并发重复蒸馏）
+    this.autoReviewing = new Set();    // 正在跑自动学习评审的 chatKey（L3，防并发重复评审）
     this.runningChats = new Set();     // 正在运行的 chatKey
     this.activeRuns = new Map();       // chatKey -> sessionId
     this.sessionAbortMarks = new Set(); // 用户请求中止的 sessionId（abortSession 打标记，#runAgent 每轮检查）
@@ -1447,6 +1449,12 @@ export class Orchestrator {
       } catch (error) {
         console.warn('[orchestrator] 写会话缓冲失败:', error?.message ?? error);
       }
+      // ── 自动学习（L3）：续接期每 N 轮旁路评审一次 ──
+      // 只在**续接轮**触发：fresh 轮刚关闭过会话，已由关闭蒸馏兜底。
+      // 评审走独立 messages、结果只落盘 —— 绝不碰主会话前缀。
+      if (session.continuation?.mode === 'continuation') {
+        this.#maybeAutoReview(chatKey, { ownerActive: Boolean(ownerPersona) });
+      }
     }
 
     // 收尾：发过话 = done；没发 = noreply（这是正常选项）
@@ -1523,6 +1531,52 @@ export class Orchestrator {
   /** 列出某会话（或全部）的归档会话摘要（②P3，供 UI 回溯）。 */
   listArchives(chatKey = '') {
     return this.conversation.listArchives(chatKey);
+  }
+
+  /**
+   * 自动学习（L3）：续接期后台评审。
+   *
+   * 触发条件（全部满足才跑）：总开关开、该会话不在评审中、缓冲存在、
+   * 轮数正好落在 `intervalTurns` 的整数倍上。
+   *
+   * 用 `turns % interval` 判断而不是另起一份计数器 —— 缓冲里的 turns 本来就是
+   * "本会话第几轮"，多一份计数既要在重启后恢复、又容易和真实状态对不上。
+   *
+   * fire-and-forget：不阻塞本轮收尾；失败只记日志（学习是增强功能，
+   * 坏了也不能让主流程陪葬）。
+   */
+  #maybeAutoReview(chatKey, { ownerActive = false } = {}) {
+    const al = autoLearnConfig();
+    if (!al.enabled) return;
+    if (this.autoReviewing.has(chatKey)) return;
+    const buf = this.conversation.get(chatKey);
+    if (!buf) return;
+    const turns = Number(buf.turns) || 0;
+    if (turns <= 0 || turns % al.intervalTurns !== 0) return;
+
+    this.autoReviewing.add(chatKey);
+    reviewConversation({
+      memory: this.memory,
+      chatKey,
+      messages: buf.messages,
+      reasonings: buf.reasonings,
+      ownerActive,
+      maxMemories: al.maxMemories,
+      createNewSkill: al.createNewSkill,
+      maxAutoSkills: al.maxAutoSkills,
+      callModel: (args) => chatCompletionWithRetry(args, 1)
+    }).then((res) => {
+      if (res?.status === 'ok') {
+        logger.info('orchestrator', `自动学习完成（第 ${turns} 轮）：写入记忆 ${res.memories} 条${res.skill ? `、技能 ${res.skill}` : ''} @ ${chatKey}`);
+        this.emit('auto-learn', { chatKey, turns, ...res });
+        return;
+      }
+      logger.info('orchestrator', `自动学习未写入（第 ${turns} 轮）：${res?.reason || res?.status} @ ${chatKey}`);
+    }).catch((error) => {
+      logger.warn('orchestrator', `自动学习失败：${error?.message ?? error} @ ${chatKey}`);
+    }).finally(() => {
+      this.autoReviewing.delete(chatKey);
+    });
   }
 
   /**

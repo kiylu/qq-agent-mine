@@ -831,6 +831,7 @@ function switchTab(name) {
   if (name === 'usage') loadUsageView({ force: true });
   if (name === 'skills') loadModulePage('skill');
   if (name === 'plugins') loadModulePage('plugin');
+  if (name === 'autolearn') loadAutoLearnPage();
   if (name === 'snowluma') loadSnowlumaPage();
   if (name === 'settings') loadSettings();
   // 「记录」「扩展」是各自辖下两页的共同父级页签：这两页都要让它们保持高亮，

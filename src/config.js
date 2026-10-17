@@ -427,8 +427,19 @@ export const DEFAULT_CONFIG = {
     enabled: false,          // 总开关，默认关（会改行为的功能不默认开）
     indexMode: 'prompt',     // 'prompt' = 索引进系统提示词；'tool' = 只靠 list_skills 工具发现
     maxBodyChars: 4000,      // 单个技能正文注入上限（字符）
-    allowAutoCreate: false,  // 允许模型用 remember_skill 自己写技能（留待后台评审驱动）
+    allowAutoCreate: false,  // 允许模型用 remember_skill 在聊天中主动写技能
     items: {}                // { [skillId]: { enabled: boolean } }
+  },
+  // 自动学习（L3）：续接期后台评审 —— 每 N 轮旁路跑一次，让模型判断
+  // "这一段有没有值得留下的记忆 / 可复用的做法"。结果只落盘，不碰主会话前缀。
+  // ⚠️ 与 markdownSkills.allowAutoCreate 的区别：
+  //    那个管"模型在聊天中主动写技能"，这个管"后台定时复盘写记忆/技能"，两条独立路径。
+  autoLearn: {
+    enabled: false,        // 总开关，默认关（会额外花模型调用、会改行为）
+    intervalTurns: 8,      // 每 N 轮续接评审一次
+    maxMemories: 2,        // 单次最多写几条记忆
+    createNewSkill: false, // 评审是否允许**新建**技能（关 = 只更新已存在的自动技能）
+    maxAutoSkills: 10      // 自动创建的技能数量上限
   },
   // 扩展热重载：把自定义的插件/skill 目录放进 plugins/ 或 skills/ 后**自动生效**，无需重启。
   // 默认开 —— 这正是"放进去就能用"的体验来源。

@@ -164,9 +164,10 @@ cov['首屏'] = scan('首屏');
 const PRIMARY_TABS = ['sessions', 'chats', 'usage', 'skills', 'snowluma', 'settings'];
 const SUB_TAB_ROUTE = {
   memory: ['archive-tab', 'archive-submenu'],
-  plugins: ['ext-tab', 'ext-submenu']
+  plugins: ['ext-tab', 'ext-submenu'],
+  autolearn: ['ext-tab', 'ext-submenu']
 };
-const ALL_VIEWS = [...PRIMARY_TABS, 'memory', 'plugins'];
+const ALL_VIEWS = [...PRIMARY_TABS, 'memory', 'plugins', 'autolearn'];
 const visitedTabs = [];
 for (const t of ALL_VIEWS) {
   const route = SUB_TAB_ROUTE[t];

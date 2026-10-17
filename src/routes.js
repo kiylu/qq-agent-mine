@@ -36,6 +36,7 @@ import {
   deleteMarkdownSkill, reloadMarkdownSkills
 } from './markdown-skills.js';
 import { exportTrajectories } from './trajectory-export.js';
+import { autoLearnConfig, updateAutoLearnConfig, autoLearnStats } from './auto-review.js';
 import { getSkillConfig, setSkillConfig, setSkillEnabled, listConfiguredSkillIds } from './skills/config.js';
 import { availabilityOf, listTools, CATEGORY_META } from './tool-registry.js';
 import { safeFetchBinary, browseLockState } from './safe-fetch.js';
@@ -1028,6 +1029,33 @@ export function createRoutes(deps) {
         const removed = deleteMarkdownSkill(match[1]);
         if (!removed) return json(res, 404, { ok: false, error: '技能不存在' });
         return json(res, 200, { ok: true });
+      }
+    },
+
+    // ── 自动学习（L3）：续接期后台评审的设置与统计 ──
+    {
+      method: 'GET', pattern: '/api/auto-learn',
+      handler: async ({ res, json }) => json(res, 200, {
+        settings: autoLearnConfig(),
+        stats: autoLearnStats()
+      })
+    },
+    {
+      method: 'POST', pattern: '/api/auto-learn/settings',
+      handler: async ({ req, res, json }) => {
+        try {
+          const body = (await bodyOf(req)) || {};
+          const settings = updateAutoLearnConfig({
+            enabled: body.enabled,
+            intervalTurns: body.intervalTurns,
+            maxMemories: body.maxMemories,
+            createNewSkill: body.createNewSkill,
+            maxAutoSkills: body.maxAutoSkills
+          });
+          return json(res, 200, { ok: true, settings });
+        } catch (error) {
+          return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+        }
       }
     },
 

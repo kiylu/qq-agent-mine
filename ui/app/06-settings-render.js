@@ -1312,8 +1312,6 @@ async function loadModulePage(kind, { rescan = false } = {}) {
   if (rescan) await rescanSkills({ quiet: true });
   else await loadSkillsStatus();
   renderModulePage(kind);
-  // Markdown 技能（L2）只挂在技能页下面（插件页不放）。
-  if (kind === 'skill') await loadMarkdownSkillsBlock();
   // 页面整页重建（切页签 / 手动刷新）时内容淡入；卡片开关后的原地重绘不播
   uiEnter(box);
 }
@@ -1798,105 +1796,226 @@ async function refreshPromptPreview(overrides = null) {
   });
 }
 
-// ── Markdown 技能（L2）：技能页下方的独立区域 ──────────────────────────────
+// ── 自动学习（L3）+ 它产出的 Markdown 技能（L2）────────────────────────────
 //
-// 为什么用**同级容器**而不是塞进 #skills-page：
-//   技能页的 renderModulePage 会整块重写 #skills-page.innerHTML（切页签、开关后原地重绘），
-//   塞进去会被冲掉。放在同级容器里，技能页怎么重绘都不影响这块。
-// 开关状态一律来自后端 /api/markdown-skills，前端不自己推断。
+// 单独一页（扩展 → 自动学习），不混进「技能」页：
+//   「技能」页放的是**人写的 JS 扩展**（注册工具、能执行动作）；
+//   这里放的是**模型自己攒的**东西（只有提示词，靠触发词/按需加载生效），语义不同，
+//   混在一起会让人分不清"这条到底是谁写的"。
+//
+// 数据走 state.autoLearn / state.mdSkills：先异步取状态、再同步渲染 ——
+// 与技能页的 state.skills 同一模式，整页重绘不会丢内容。
+// 开关一律落在后端（/api/auto-learn、/api/markdown-skills），前端不自己推断。
 
-async function loadMarkdownSkillsBlock({ withBody = false } = {}) {
-  const pane = $('#skills-page');
-  if (!pane || !pane.parentNode) return;
-  let block = $('#md-skills-block');
-  if (!block) {
-    block = document.createElement('div');
-    block.id = 'md-skills-block';
-    block.className = 'usage-pane';
-    pane.parentNode.insertBefore(block, pane.nextSibling);
-  }
-  let data = null;
-  try { data = await api(`/api/markdown-skills${withBody ? '?withBody=1' : ''}`); } catch { data = null; }
-  block.innerHTML = renderMarkdownSkillsBlock(data);
-  bindMarkdownSkillsEvents(block, data);
+async function loadAutoLearnStatus() {
+  try { state.autoLearn = await api('/api/auto-learn'); }
+  catch { state.autoLearn = null; }
+  return state.autoLearn;
 }
 
-function mdSkillRow(s) {
-  return `<div class="sk-row" data-md-id="${esc(s.id)}" style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
-    <div style="flex:1;min-width:260px">
-      <div><b>${esc(s.name)}</b>
-        <span class="muted">（${s.source === 'auto' ? '自动' : '手写'}）</span>
-        <span class="muted">· 命中 ${Number(s.hits) || 0} 次${s.lastHitAt ? ` · 最近 ${fmtTime(s.lastHitAt)}` : ''}</span>
+async function loadMarkdownSkillsStatus() {
+  try { state.mdSkills = await api('/api/markdown-skills'); }
+  catch { state.mdSkills = null; }
+  return state.mdSkills;
+}
+
+/** 切到本页：骨架 → 取状态 → 渲染。 */
+async function loadAutoLearnPage() {
+  const box = $('#autolearn-page');
+  if (!box) return;
+  box.innerHTML = `<div class="usage-wrap">
+    <div class="usage-head"><h2>自动学习</h2></div>
+    <div class="sk-block"><div class="sk-row"></div><div class="sk-row"></div><div class="sk-row"></div></div>
+  </div>`;
+  await Promise.all([loadAutoLearnStatus(), loadMarkdownSkillsStatus()]);
+  renderAutoLearnPage();
+  uiEnter(box);
+}
+
+/** 取完状态后整页重绘。 */
+async function refreshAutoLearnPage() {
+  await Promise.all([loadAutoLearnStatus(), loadMarkdownSkillsStatus()]);
+  renderAutoLearnPage();
+}
+
+/** 卡片内复选框的统一内联样式（与 .checkbox-row 一致：accent 色 + 不收缩）。 */
+const AL_CHK = 'accent-color:var(--ac);flex-shrink:0;margin:0';
+
+/** 卡片里的紧凑控件：`控件 + 说明文字` 一行。 */
+function alInline(label, control) {
+  return `<label style="display:flex;align-items:center;gap:6px;white-space:nowrap">${control}<span>${label}</span></label>`;
+}
+
+function mdSkillCard(s) {
+  const lastHit = s.lastHitAt ? ` · 最近 ${fmtTime(s.lastHitAt)}` : '';
+  return `<div class="mcard" data-md-id="${esc(s.id)}" style="cursor:default">
+    <div class="mcard-main">
+      <div class="mcard-name">${esc(s.name)} <span class="uc-tag">${s.source === 'auto' ? '自动' : '手写'}</span></div>
+      <div class="mcard-desc">${esc(s.description || '（没有写说明）')}</div>
+      <div class="muted" style="font-size:11px;margin-top:2px">
+        触发词：${esc((s.triggers || []).join('、') || '（无）')} · 命中 ${Number(s.hits) || 0} 次${esc(lastHit)} · ${esc(s.relDir || '')}
       </div>
-      <div class="muted">${esc(s.description || '（没有写说明）')}</div>
-      <div class="muted" style="font-size:11px">触发词：${esc((s.triggers || []).join('、') || '（无）')} · ${esc(s.relDir || '')}</div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <label class="muted"><input type="checkbox" class="md-skill-toggle" ${s.enabled ? 'checked' : ''} /> 启用</label>
+    <div class="mcard-acts">
+      ${alInline('启用', `<input type="checkbox" class="md-skill-toggle" ${s.enabled ? 'checked' : ''} />`)}
       <button class="btn btn-small md-skill-edit">编辑</button>
       <button class="btn btn-small md-skill-del">删除</button>
     </div>
   </div>`;
 }
 
-function renderMarkdownSkillsBlock(data) {
-  if (!data) {
-    return `<div class="usage-wrap"><div class="usage-head"><h2>Markdown 技能</h2></div>
-      <div class="hint">读取失败：后端没有提供 /api/markdown-skills（请确认版本）。</div></div>`;
+function buildAutoLearnHtml() {
+  const al = state.autoLearn;
+  const md = state.mdSkills;
+
+  // ── 后台评审设置卡 ──
+  let reviewCard = '';
+  if (al) {
+    const s = al.settings || {};
+    const st = al.stats || {};
+    const statusText = !st.lastRunAt
+      ? '还没跑过'
+      : `${fmtTime(st.lastRunAt)}（${st.lastStatus === 'ok' ? '有写入' : st.lastStatus === 'nothing' ? '无需写入' : st.lastStatus || '—'}）`;
+    reviewCard = `<div class="mcard" style="cursor:default;align-items:flex-start">
+      <div class="mcard-main">
+        <div class="mcard-name">后台评审 ${s.enabled ? '' : '<span class="uc-tag">已关闭</span>'}</div>
+        <div class="mcard-desc" style="-webkit-line-clamp:unset;display:block">
+          连着聊的时候，每 N 轮在后台复盘一次：让模型判断这一段有没有值得留下的<b>记忆</b>
+          （写进【自身状态】）或<b>可复用的做法</b>（写成下面的 Markdown 技能）。
+          评审走独立调用、结果只落盘，<b>不改动当前会话的提示词</b>，所以不影响前缀缓存。
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-top:10px">
+          ${alInline('启用自动学习', `<input type="checkbox" id="al-enabled" style="${AL_CHK}" ${s.enabled ? 'checked' : ''} />`)}
+          ${alInline('轮复盘一次', `每 <input type="number" class="inp" id="al-interval" min="1" max="50" step="1" value="${Number(s.intervalTurns) || 8}" style="width:64px" />`)}
+          ${alInline('条记忆', `单次最多 <input type="number" class="inp" id="al-maxmem" min="1" max="5" step="1" value="${Number(s.maxMemories) || 2}" style="width:56px" />`)}
+          ${alInline('允许新建技能', `<input type="checkbox" id="al-create" style="${AL_CHK}" ${s.createNewSkill ? 'checked' : ''} />`)}
+          ${alInline('自动技能上限', `<input type="number" class="inp" id="al-maxskills" min="0" max="100" step="1" value="${Number(s.maxAutoSkills) || 0}" style="width:64px" />`)}
+        </div>
+        <div class="muted" style="margin-top:8px;font-size:12px">
+          已跑 ${Number(st.runs) || 0} 次 · 累计写入记忆 ${Number(st.totalMemories) || 0} 条、技能 ${Number(st.totalSkills) || 0} 个 · 上次：${esc(statusText)}
+        </div>
+      </div>
+    </div>`;
+  } else if (al === null) {
+    reviewCard = '<div class="hint">读取失败：后端没有提供 /api/auto-learn（请确认版本）。</div>';
   }
-  const on = data.enabled === true;
-  const list = Array.isArray(data.skills) ? data.skills : [];
+
+  // ── Markdown 技能设置卡 ──
+  let mdCard = '';
+  if (md) {
+    mdCard = `<div class="mcard" style="cursor:default;align-items:flex-start">
+      <div class="mcard-main">
+        <div class="mcard-name">加载方式 ${md.enabled ? '' : '<span class="uc-tag">已关闭</span>'}</div>
+        <div class="mcard-desc" style="-webkit-line-clamp:unset;display:block">
+          一份 <code>SKILL.md</code>（只有提示词、没有 JS），放在 <code>skills/&lt;id&gt;/SKILL.md</code>
+          或 <code>plugins/&lt;id&gt;/SKILL.md</code>。系统提示词里<b>只常驻名字和一句话说明</b>；
+          正文按需加载（模型调 <code>load_skill</code>，或命中触发词时追加到消息末尾）——
+          技能库可以一直加，不占常驻 token，也不打断前缀缓存。
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-top:10px">
+          ${alInline('启用 Markdown 技能', `<input type="checkbox" id="md-enabled" style="${AL_CHK}" ${md.enabled ? 'checked' : ''} />`)}
+          <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+            <span>索引方式</span>
+            <select class="inp" id="md-index-mode" style="width:auto">
+              <option value="prompt" ${md.indexMode === 'prompt' ? 'selected' : ''}>写进系统提示词（推荐）</option>
+              <option value="tool" ${md.indexMode === 'tool' ? 'selected' : ''}>只用 list_skills 工具发现</option>
+            </select>
+          </label>
+          ${alInline('正文字数上限', `<input type="number" class="inp" id="md-max-body" min="200" max="20000" step="100" value="${Number(md.maxBodyChars) || 4000}" style="width:96px" />`)}
+          ${alInline('允许模型在聊天中主动写技能', `<input type="checkbox" id="md-auto-create" style="${AL_CHK}" ${md.allowAutoCreate ? 'checked' : ''} />`)}
+        </div>
+      </div>
+    </div>`;
+  } else if (md === null) {
+    mdCard = '<div class="hint">读取失败：后端没有提供 /api/markdown-skills（请确认版本）。</div>';
+  }
+
+  const list = Array.isArray(md?.skills) ? md.skills : [];
+  const cards = list.map(mdSkillCard).join('');
+  const emptyHint = md
+    ? '<div class="empty-hint">还没有 Markdown 技能。点下面「＋ 新建」，或直接把 <code>SKILL.md</code> 放进 <code>skills/&lt;id&gt;/</code>。</div>'
+    : '';
+
   return `<div class="usage-wrap">
     <div class="usage-head">
-      <h2>Markdown 技能（声明式）</h2>
+      <h2>自动学习</h2>
+      <div class="usage-days">
+        <span class="uc-tag">已跑 ${Number(al?.stats?.runs) || 0} 次</span>
+        <button class="btn btn-small" id="al-refresh-btn">刷新</button>
+      </div>
+    </div>
+    <div class="hint" style="margin-bottom:14px">
+      这里放的是<b>模型自己攒的</b>东西：会话关闭时蒸馏的自身状态、连着聊时后台复盘出的做法。
+      它们只有提示词、没有代码，和「技能」页里<b>人写的 JS 扩展</b>不是一回事。
+    </div>
+
+    <h3 class="usage-h3">后台评审</h3>
+    <div class="module-grid">${reviewCard}</div>
+
+    <h3 class="usage-h3" style="margin-top:22px">Markdown 技能（${list.length}）</h3>
+    <div class="module-grid">${mdCard}</div>
+    <div style="display:flex;gap:8px;margin:10px 0">
       <button class="btn btn-small" id="md-skill-add">＋ 新建</button>
-      <div class="usage-days"><button class="btn btn-small" id="md-skill-reload">重扫磁盘</button></div>
+      <button class="btn btn-small" id="md-skill-reload">重扫磁盘</button>
     </div>
-    <div class="hint" style="margin-bottom:10px">
-      这类技能是<b>一份 <code>SKILL.md</code></b>（只有提示词、没有 JS），放在 <code>skills/&lt;id&gt;/SKILL.md</code> 或 <code>plugins/&lt;id&gt;/SKILL.md</code>。<br />
-      系统提示词里<b>只常驻名字和一句话说明</b>；正文按需加载（模型调 <code>load_skill</code>，或命中触发词时自动追加到末尾）——
-      所以技能库可以一直加而不占常驻 token，也不会打断前缀缓存。
-    </div>
-    <div class="sk-row" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:8px 0">
-      <label><input type="checkbox" id="md-enabled" ${on ? 'checked' : ''} /> 启用 Markdown 技能</label>
-      <label>索引方式
-        <select id="md-index-mode">
-          <option value="prompt" ${data.indexMode === 'prompt' ? 'selected' : ''}>写进系统提示词（推荐）</option>
-          <option value="tool" ${data.indexMode === 'tool' ? 'selected' : ''}>只用 list_skills 工具发现</option>
-        </select>
-      </label>
-      <label>正文字数上限 <input type="number" id="md-max-body" min="200" max="20000" step="100" value="${Number(data.maxBodyChars) || 4000}" style="width:96px" /></label>
-      <label><input type="checkbox" id="md-auto-create" ${data.allowAutoCreate ? 'checked' : ''} /> 允许模型自动创建（默认关）</label>
-    </div>
-    ${list.map(mdSkillRow).join('') || '<div class="empty-hint">还没有 Markdown 技能。点右上角「＋ 新建」，或直接把 <code>SKILL.md</code> 放进 <code>skills/&lt;id&gt;/</code>。</div>'}
+    <div class="module-grid">${cards || emptyHint}</div>
   </div>`;
 }
 
-function bindMarkdownSkillsEvents(block, data) {
-  const saveSettings = async (patch) => {
+function renderAutoLearnPage() {
+  const box = $('#autolearn-page');
+  if (!box) return '';
+  const html = buildAutoLearnHtml();
+  box.innerHTML = html;
+  bindAutoLearnPageEvents(box);
+  if (typeof enhanceConcept2UI === 'function') enhanceConcept2UI(box);
+  return html;
+}
+
+function bindAutoLearnPageEvents(box) {
+  if (!box) return;
+
+  // 后台评审
+  const saveAl = async (patch) => {
     try {
-      await api('/api/markdown-skills/settings', { method: 'POST', body: JSON.stringify(patch) });
-      await loadMarkdownSkillsBlock();
+      await api('/api/auto-learn/settings', { method: 'POST', body: JSON.stringify(patch) });
+      await refreshAutoLearnPage();
     } catch (e) { alert(`保存失败：${e.message}`); }
   };
-  block.querySelector('#md-enabled')?.addEventListener('change', (e) => saveSettings({ enabled: e.target.checked }));
-  block.querySelector('#md-index-mode')?.addEventListener('change', (e) => saveSettings({ indexMode: e.target.value }));
-  block.querySelector('#md-max-body')?.addEventListener('change', (e) => saveSettings({ maxBodyChars: Number(e.target.value) }));
-  block.querySelector('#md-auto-create')?.addEventListener('change', (e) => saveSettings({ allowAutoCreate: e.target.checked }));
-  block.querySelector('#md-skill-reload')?.addEventListener('click', async () => {
-    try { await api('/api/markdown-skills/reload', { method: 'POST' }); await loadMarkdownSkillsBlock(); }
+  box.querySelector('#al-enabled')?.addEventListener('change', (e) => saveAl({ enabled: e.target.checked }));
+  box.querySelector('#al-interval')?.addEventListener('change', (e) => saveAl({ intervalTurns: Number(e.target.value) }));
+  box.querySelector('#al-maxmem')?.addEventListener('change', (e) => saveAl({ maxMemories: Number(e.target.value) }));
+  box.querySelector('#al-create')?.addEventListener('change', (e) => saveAl({ createNewSkill: e.target.checked }));
+  box.querySelector('#al-maxskills')?.addEventListener('change', (e) => saveAl({ maxAutoSkills: Number(e.target.value) }));
+  box.querySelector('#al-refresh-btn')?.addEventListener('click', () => refreshAutoLearnPage());
+
+  // Markdown 技能设置
+  const saveMd = async (patch) => {
+    try {
+      await api('/api/markdown-skills/settings', { method: 'POST', body: JSON.stringify(patch) });
+      await refreshAutoLearnPage();
+    } catch (e) { alert(`保存失败：${e.message}`); }
+  };
+  box.querySelector('#md-enabled')?.addEventListener('change', (e) => saveMd({ enabled: e.target.checked }));
+  box.querySelector('#md-index-mode')?.addEventListener('change', (e) => saveMd({ indexMode: e.target.value }));
+  box.querySelector('#md-max-body')?.addEventListener('change', (e) => saveMd({ maxBodyChars: Number(e.target.value) }));
+  box.querySelector('#md-auto-create')?.addEventListener('change', (e) => saveMd({ allowAutoCreate: e.target.checked }));
+  box.querySelector('#md-skill-reload')?.addEventListener('click', async () => {
+    try { await api('/api/markdown-skills/reload', { method: 'POST' }); await refreshAutoLearnPage(); }
     catch (e) { alert(`重扫失败：${e.message}`); }
   });
-  block.querySelector('#md-skill-add')?.addEventListener('click', () => openMarkdownSkillModal(null));
-  block.querySelectorAll('.sk-row[data-md-id]').forEach((row) => {
+  box.querySelector('#md-skill-add')?.addEventListener('click', () => openMarkdownSkillModal(null));
+
+  // 单个技能
+  box.querySelectorAll('[data-md-id]').forEach((row) => {
     const id = row.dataset.mdId;
-    const skill = (data?.skills || []).find((s) => s.id === id) || { id };
+    const skill = (state.mdSkills?.skills || []).find((s) => s.id === id) || { id };
     row.querySelector('.md-skill-toggle')?.addEventListener('change', async (e) => {
       try {
         await api(`/api/markdown-skills/${encodeURIComponent(id)}`, {
           method: 'POST', body: JSON.stringify({ enabled: e.target.checked })
         });
-        await loadMarkdownSkillsBlock();
+        await refreshAutoLearnPage();
       } catch (err) { e.target.checked = !e.target.checked; alert(`切换失败：${err.message}`); }
     });
     row.querySelector('.md-skill-edit')?.addEventListener('click', async () => {
@@ -1911,7 +2030,7 @@ function bindMarkdownSkillsEvents(block, data) {
       if (!(await uiConfirm(`删除 Markdown 技能「${skill.name || id}」？\n\n只会删掉它的 SKILL.md 文件，此操作不可撤销。`))) return;
       try {
         await api(`/api/markdown-skills/${encodeURIComponent(id)}`, { method: 'DELETE' });
-        await loadMarkdownSkillsBlock();
+        await refreshAutoLearnPage();
       } catch (err) { alert(`删除失败：${err.message}`); }
     });
   });
@@ -1955,7 +2074,7 @@ function openMarkdownSkillModal(skill) {
         })
       });
       closeModelModal(overlay);
-      await loadMarkdownSkillsBlock();
+      await refreshAutoLearnPage();
     } catch (e) { alert(`保存失败：${e.message}`); }
   });
 }

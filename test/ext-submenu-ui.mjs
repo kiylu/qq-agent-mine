@@ -84,7 +84,7 @@ const click = (el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles:
 // ── 3) 两组菜单共用同一套行为，逐组跑 ──
 const GROUPS = [
   { name: '记录', tab: 'archive-tab', menu: 'archive-submenu', pages: ['chats', 'memory'], views: ['view-chats', 'view-memory'] },
-  { name: '扩展', tab: 'ext-tab', menu: 'ext-submenu', pages: ['skills', 'plugins'], views: ['view-skills', 'view-plugins'] }
+  { name: '扩展', tab: 'ext-tab', menu: 'ext-submenu', pages: ['skills', 'plugins', 'autolearn'], views: ['view-skills', 'view-plugins', 'view-autolearn'] }
 ];
 
 for (const g of GROUPS) {
@@ -96,8 +96,10 @@ for (const g of GROUPS) {
 
   check(!!tab, `「${g.name}」有一级触发器 #${g.tab}`);
   check(!!menu, `「${g.name}」有二级菜单容器 #${g.menu}`);
-  check(menu.querySelectorAll('.ext-subitem').length === 2, `「${g.name}」二级菜单两项`);
-  check(!!subA && !!subB, `两项都带 data-sub-tab（${g.pages.join(' / ')}）`);
+  check(menu.querySelectorAll('.ext-subitem').length === g.pages.length,
+    `「${g.name}」二级菜单 ${g.pages.length} 项（实际 ${menu.querySelectorAll('.ext-subitem').length}）`);
+  check(g.pages.every((p) => !!menu.querySelector(`[data-sub-tab="${p}"]`)),
+    `每项都带 data-sub-tab（${g.pages.join(' / ')}）`);
   for (const id of g.views) {
     check(!!document.getElementById(id), `视图容器 ${id} 保留（内容页没合并掉）`);
   }
