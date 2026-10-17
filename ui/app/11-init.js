@@ -93,7 +93,7 @@ function initSubmenu(tabId, menuId, pages) {
 }
 
 initSubmenu('archive-tab', 'archive-submenu', ['chats', 'memory']);   // 记录
-initSubmenu('ext-tab', 'ext-submenu', ['skills', 'plugins']);       // 扩展
+initSubmenu('ext-tab', 'ext-submenu', ['skills', 'plugins', 'autolearn']);   // 扩展
 
 /**
  * 供 switchTab 用：把「记录」「扩展」高亮为当前页。

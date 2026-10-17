@@ -54,6 +54,21 @@ L1/L2 零额外调用且决定质量；L3 才引入成本；L4 是对已沉淀�
 
 给 L1 产出的"技能类"内容一个**不破缓存**的安放处。
 
+**定位（先说清楚它解决什么问题）**
+
+它本身不是"新功能"，而是 **L3 的载体**：L3 的后台评审要产出"以后该怎么做"，需要一个
+既能在提示词里被发现、又不占常驻 token、还能被人手工编辑的容器。三型扩展的分工：
+
+| 形态 | 何时生效 | 适合放什么 |
+|---|---|---|
+| `persona.customRules` / `systemPromptOverride` | **每轮常驻** | 全局、长期稳定的规则 |
+| JS 技能（`skills/<id>/index.js`） | 模型调工具时 | 需要真正执行动作的能力 |
+| Markdown 技能（`SKILL.md`） | 命中触发词 / 模型按需加载 | **场景化的做法**（如"怎么主持海龟汤"） |
+
+结论：**没有 L3 时它只能手写**，价值有限（大致等价于"按场景生效的 customRules"）；
+**有 L3 时**它才是自动沉淀的落点。默认 `enabled: false`，不开启时对运行期零影响
+（提示词不变、工具不可见）。
+
 **怎么改**（`src/skills/manager.js` + 扩展页）
 
 1. 新增一型技能：`skills/<id>/SKILL.md`（YAML frontmatter：`name` / `description` / `triggers` /
@@ -110,8 +125,10 @@ L1/L2 零额外调用且决定质量；L3 才引入成本；L4 是对已沉淀�
 
 - **成本**：每次评审 = 一次额外模型调用 → 低频 + 可配 + 有开关，并优先只在出现信号时触发。
 - **不要照搬"fork 继承 cached system prompt"**：该技巧只在**缓存还热**时成立。关闭蒸馏发生在
-  "沉默超过缓存 TTL"之后，缓存已冷，复用前缀零收益 → 关闭蒸馏维持独立小模型调用；
-  **只有续接期评审**（缓存热）才值得让调用复用主会话前缀。
+  "沉默超过缓存 TTL"之后，缓存已冷，复用前缀零收益 → 关闭蒸馏维持独立小模型调用。
+  续接期评审虽然缓存是热的，但**实际取舍是不复用**：主 systemPrompt 是"群友人设"，
+  拿它当前缀会让模型接着扮演群友、而不是做复盘（评审是**元任务**）→ 用独立的小提示词，
+  成本同样可控（每 N 轮一次 + 输入按字符预算截断）。
 - 可能重复记（评审与关闭蒸馏各记一次）→ 复用现有去重（`appendSelf`、`#appendRaw` 的 `some()`）。
 
 ---
@@ -329,9 +346,13 @@ L1/L2 零额外调用且决定质量；L3 才引入成本；L4 是对已沉淀�
   `enabled`（默认关）/ `indexMode`（`prompt`|`tool`）/ `maxBodyChars` / `allowAutoCreate` / `items`。
 - 接口：`GET /api/markdown-skills`（`?withBody=1` 带正文）、`POST .../settings`、
   `POST .../reload`、`POST /:id`（新建 / 改内容 / 切开关）、`DELETE /:id`。
-- 界面：技能页下方新增独立区块（**同级容器**，避免被技能页的整块重绘冲掉）：
-  功能开关 + 索引方式 + 字数上限 + 自动创建开关；每个技能显示来源（手写/自动）、
-  命中次数、最后命中，并支持启用 / 编辑正文 / 删除 / 新建 / 重扫磁盘。
+- 界面：**独立页签**「扩展 → 自动学习」（`#view-autolearn`）。与「技能」页分开是刻意的：
+  那页放的是**人写的 JS 扩展**（注册工具、能执行动作），这里放的是**模型自己攒的**东西
+  （只有提示词），混在一页会分不清"这条到底是谁写的"。
+  页面结构：`后台评审` 设置卡 + `Markdown 技能` 设置卡 + 技能卡片列表；
+  复用 `usage-wrap / usage-h3 / module-grid / mcard`，输入框用 `.inp`，与项目其它页一致。
+  - ⚠️ 界面位置改过两次：先插成 `#skills-page` 的兄弟节点（`#view-skills` 是 `display:flex`，
+    结果变成左右两栏各占一半），再改为页内区块，最终拆成独立页签 —— 技能页的改动已全部回退。
 
 **L5 · 轨迹导出**（新增 `src/trajectory-export.js` + `scripts/export-trajectories.mjs`）
 
@@ -367,3 +388,61 @@ L1/L2 零额外调用且决定质量；L3 才引入成本；L4 是对已沉淀�
   卡死（进程 5 分钟不退出）。已修：新建需要 `name`，缺省字段才沿用现有值。
 - 归档里的 `systemPrompt` 是**独立字段**（`conversation.js` 存缓冲时把 system 从 messages
   剥掉了），不是 messages 里的 system 条目 —— 导出时必须先读该字段。
+
+### 2026-10-17 · L3（续接期后台评审）
+
+**新增 `src/auto-review.js`**
+
+- 触发（全部满足才跑）：`autoLearn.enabled` 开、该会话不在评审中、缓冲存在、
+  `buf.turns % intervalTurns === 0`。用 `turns` 取模而不是另起计数器 —— 缓冲里的 turns
+  本来就是"本会话第几轮"，多一份计数既要在重启后恢复、又容易和真实状态对不上。
+- 触发点：`orchestrator` 在 `conversation.save()` 之后，且只在
+  `session.continuation.mode === 'continuation'` 时（fresh 轮已由关闭蒸馏兜底）。
+- **旁路调用**：独立 messages，结果只落盘，绝不进主会话前缀。
+- **不复用主会话前缀**：评审是元任务，拿"群友人设"提示词当前缀会让模型接着扮演群友。
+  改用独立的小提示词 + 输入按 6000 字符预算截断。
+- 产出两类：
+  - **记忆** → `memory.appendSelf(chatKey, content, { kind, ownerActive })`，自动继承 L4b 的
+    初始权重（rule×主人=5 等）与去重；
+  - **技能** → `saveMarkdownSkill({ ..., source: 'auto' })`。手写技能**不覆盖**；
+    新建受 `createNewSkill` 与 `maxAutoSkills` 双重约束（0 = 不许新建，但允许更新已有的自动技能）。
+- 统计落盘 `data/auto-learn-stats.json`（runs / lastRunAt / lastStatus / 累计条数），供 UI 显示。
+
+**配置 / 接口 / 界面**
+
+- `config.autoLearn`：`enabled`（默认关）/ `intervalTurns`（8）/ `maxMemories`（2）/
+  `createNewSkill`（false）/ `maxAutoSkills`（10）。
+- 接口：`GET /api/auto-learn`（设置 + 统计）、`POST /api/auto-learn/settings`。
+- 界面：**独立页签**「扩展 → 自动学习」里的「后台评审」卡 —— 总开关、间隔、
+  单次记忆条数、允许新建技能、自动技能上限，以及"已跑 N 次 / 累计写入 / 上次结果"。
+  全部在 UI 里改，不需要手改 config。
+- 与 `markdownSkills.allowAutoCreate` 的分工写进了注释与界面文案：
+  那个管"模型在聊天中主动写技能（`remember_skill`）"，这个管"后台定时复盘"，两条独立路径。
+
+**测试**
+
+- 新增 `test/auto-review-test.mjs`（20 条，已挂进 `npm test`）。
+- `test/coverage-http.mjs` 补 2 条路由覆盖：接口覆盖率 88%（97/110），`npm test` 全绿（39 套件）。
+
+**行为变化（需知）**
+
+- 默认关闭；开启后**每 N 轮续接多一次模型调用**（这是唯一新增的固定成本）。
+- 评审的写入会进 `_self.json` 与 `skills/<id>/SKILL.md`（后者仅当允许新建时）。
+
+**踩坑记录**
+
+- 配置钳制第一版写成 `Number(v) || 默认值`，把**合法的 0** 吃掉了 ——
+  `maxAutoSkills: 0`（表示"不许自动新建技能"）会被替换成 10。已改为只把非有限数当缺失
+  （`clampInt`）。
+
+**界面调整（同日）**
+
+- 新增「扩展 → 自动学习」**独立页签**：`#view-autolearn` / `#autolearn-page`；
+  `ext-submenu` 加第三项，`initSubmenu` 与 `switchTab` 同步注册。
+- 技能页（`#skills-page`）此前误加的两个区块**已全部回退**：`renderModulePage` 不再拼
+  `mdHtml` / `autoLearnHtml`，`bindModulePageEvents` 也不再绑它们。
+- 视觉对齐项目既有风格：`usage-wrap / usage-head / usage-h3 / module-grid / mcard / uc-tag`；
+  输入框统一加 `.inp`（裸 `input` 只有 `font:inherit`，不套类会露出浏览器默认外观）；
+  设置卡的 `.mcard-desc` 解掉 2 行截断（`-webkit-line-clamp:unset`），否则说明文字被吃掉。
+- 测试同步：`coverage-wiring` 的视图清单加 `autolearn`（9 个视图）；
+  `ext-submenu-ui` 的二级项断言从硬编码 2 项改为按 `pages.length` 校验。
