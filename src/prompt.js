@@ -134,10 +134,10 @@ function memoryRules() {
     '- memory_append 只用来记录"对某位群友的长期印象"（他的说话风格、爱玩的梗、雷点、身份关系等稳定信息）；这些内容会自动出现在下方【记忆】里。',
     '- 不要记临时话题、临时想法；只记以后跟这个人打交道还用得上的。印象过时/不再准确时用 memory_remove 删掉。',
     '- 每次扫一眼【记忆】，只有自然相关才主动提起；不要为了用记忆而硬聊旧话题。',
-    '- remember_self 记录**你自己**需要跨轮保留的内容，分两类：kind=state（当前状态：正在进行的任务如海龟汤还没结束、你出的谜底是什么、还没做完的待办）；kind=rule（以后该怎么做：你自己定下的规则或承诺，以及**群友纠正了你的说话方式/做法**时该记住的规矩，如"别每次都总结""别太正式"）。这些内容会出现在【自身状态】段。别把它当情绪日记，只记真正需要跨轮保留的。',
+    '- remember_self 记录**你自己**需要跨轮保留的内容，分两类：kind=state（跨轮必须接得上的事实：还在进行的多轮活动如海龟汤没结束、你出的谜底、答应了还没做的事、对方问了还没答的问题）；kind=rule（以后该怎么做：你自己明确承诺的规矩，以及**群友真的开口纠正**了你的说话方式/做法时该记住的，如"别每次都总结""别太正式"）。**不要记"你打算怎么回这一句"**——那类念头在 send 之后就失效了，写进来只会挤掉真正有用的事实。别把它当情绪日记。',
     '- **群友明确纠正你时（"你 AI 味好重""别这么说话""话太多了"），用 kind=rule 记一条**——这类反馈比普通状态重要得多，会被优先保留。',
     '- 【自身状态】还有个自动来源：每次会话关闭（沉默太久 / 轮次或体积超上限 / 管理员手动重开）时，系统会把你这段对话里没发出去的思考蒸馏成几条带回来。所以重要的暗牌答案、约定，即使你觉得上文还留着，主动用 remember_self 再落一次更稳。',
-    '- 【自身状态】条数有上限，超了会优先淘汰权重最低的（越久没被用到、越普通的越先走）；被淘汰的可在管理端「回收站」里恢复。所以记的时候要挑真正重要的。'
+    '- 【自身状态】条数有上限，超了会优先淘汰权重最低的（越久没被用到、越普通的越先走）；kind=state 的条目超过 72 小时会停止注入（rule 不受影响）。被淘汰或手动删掉的都在管理端「已清理」里，可恢复。所以记的时候要挑真正重要的。'
   ].join('\n');
 }
 
@@ -218,6 +218,69 @@ function renderSkillSections(sections) {
   return out;
 }
 
+/**
+ * 系统提示词的**可编辑分段**（2026-10-18）。
+ *
+ * 这些规则原先只能改代码。现在每段都可寻址、可在管理端单独覆盖：
+ * 覆盖存在 `config.promptOverrides[<id>]`（留空 = 用内置默认）。
+ *
+ * 两条硬约束：
+ * 1. `locked: true`（安全规则 / 工具协议）**不可覆盖** —— 一次误配置就能把
+ *    "不执行本地操作 / 不泄露密钥 / 工具协议"整套删掉，代价不对称。
+ * 2. 覆盖内容必须**逐字节稳定**（只读 config，不掺时间戳/随机数），否则系统提示词
+ *    每轮都变，前缀缓存全废（见 doc/extend_development/caching-contract.md 铁律一）。
+ */
+export const PROMPT_SECTIONS = [
+  {
+    id: 'intro',
+    title: '开场身份',
+    fn: (cfg) => `你是「${cfg.botName}」，一个混在 QQ 群里的普通群友（不是助手、不是客服）。你的所有行为都通过工具完成，发言必须像真人。`
+  },
+  { id: 'security', title: '安全规则', locked: true, fn: () => securityRules() },
+  { id: 'tools', title: '工具协议', locked: true, fn: () => toolProtocol() },
+  { id: 'antiAi', title: '反 AI 味', fn: () => antiAiFlavor() },
+  { id: 'subjectivity', title: '主体性', fn: () => subjectivity() },
+  { id: 'speakOrNot', title: '说还是不说（随参与度变化）', fn: (cfg) => speakOrNot(cfg.participation) },
+  { id: 'notAQueue', title: '不是排队应答', fn: () => notAQueue() },
+  { id: 'humanRhythm', title: '真人节奏', fn: () => humanRhythm() },
+  { id: 'notModerator', title: '不当主持人', fn: () => notModerator() },
+  { id: 'quoteAt', title: '引用与 @', fn: () => quoteAndAt() },
+  { id: 'memory', title: '轻量记忆', fn: () => memoryRules() },
+  { id: 'sticker', title: '表情包', fn: () => stickerRules() },
+  { id: 'qqScene', title: 'QQ 场景规则', fn: () => qqSceneRules() },
+  { id: 'report', title: '举报与封禁', fn: () => reportBan() }
+];
+
+/** 某段的**生效文本**：有覆盖且该段未锁定 → 用覆盖，否则用内置默认。 */
+export function promptSectionText(id, cfg = getConfig().persona) {
+  const sec = PROMPT_SECTIONS.find((s) => s.id === id);
+  if (!sec) return '';
+  if (!sec.locked) {
+    const ov = String(getConfig().promptOverrides?.[id] ?? '').trim();
+    if (ov) return ov;
+  }
+  return sec.fn(cfg);
+}
+
+/** 管理端用：列出每段的默认值 / 覆盖值 / 生效值。 */
+export function listPromptSections(cfg = getConfig().persona) {
+  const overrides = getConfig().promptOverrides || {};
+  return PROMPT_SECTIONS.map((s) => {
+    const defaultText = s.fn(cfg);
+    const overrideText = s.locked ? '' : String(overrides[s.id] ?? '');
+    const overridden = Boolean(overrideText.trim());
+    return {
+      id: s.id,
+      title: s.title,
+      locked: s.locked === true,
+      overridden,
+      defaultText,
+      overrideText,
+      effectiveText: overridden ? overrideText : defaultText
+    };
+  });
+}
+
 /** 组装系统提示。 */
 export function buildSystemPrompt({ persona, skillContext, extraSections = [] } = {}) {
   const cfg = persona ?? getConfig().persona;
@@ -256,35 +319,13 @@ export function buildSystemPrompt({ persona, skillContext, extraSections = [] } 
     return parts.join('\n');
   }
 
-  const parts = [
-    `你是「${cfg.botName}」，一个混在 QQ 群里的普通群友（不是助手、不是客服）。你的所有行为都通过工具完成，发言必须像真人。`,
-    '',
-    securityRules(),
-    '',
-    toolProtocol(),
-    '',
-    antiAiFlavor(),
-    '',
-    subjectivity(),
-    '',
-    speakOrNot(cfg.participation),
-    '',
-    notAQueue(),
-    '',
-    humanRhythm(),
-    '',
-    notModerator(),
-    '',
-    quoteAndAt(),
-    '',
-    memoryRules(),
-    '',
-    stickerRules(),
-    '',
-    qqSceneRules(),
-    '',
-    reportBan()
-  ];
+  // 逐段渲染：每段先看 config.promptOverrides 有没有覆盖（安全/工具协议锁定不可覆盖）。
+  // 段与段之间用空行分隔，与改造前的字节布局一致 —— 未做任何覆盖时，输出与旧版**逐字节相同**。
+  const parts = [];
+  for (const sec of PROMPT_SECTIONS) {
+    if (parts.length) parts.push('');
+    parts.push(promptSectionText(sec.id, cfg));
+  }
 
   // 注入 Skill 提示词片段（已按 priority 降序；一律排在核心规则之后）
   parts.push(...renderSkillSections(skillSections));

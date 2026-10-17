@@ -202,14 +202,23 @@ export const DEFAULT_CONFIG = {
     roleText: PERSONAS.xiaojingyu.text,     // 默认人设：原版"小鲸鱼"角色卡（适配版）
     participation: 'medium',                // low | medium | high —— 参与度参考
     customRules: '',                        // 追加自定义规则（可选）
-    // 系统提示词覆盖（可选）：非空时**整体替换** buildSystemPrompt 的默认行为准则。
-    // ⚠️ 高级功能：默认提示词包含安全规则/工具协议/反AI味等关键约束，
-    //    覆盖后这些全部失效，需自行在覆盖文本里写明。留空 = 用内置默认提示词。
+    // 系统提示词覆盖（可选）：非空时**整体替换**默认的行为准则段。
+    // ⚠️ 高级功能：安全规则与工具协议**不受影响**（无论怎么覆盖都会追加在最后）。
+    //    想只改某一段而不重写全文，用顶层 `promptOverrides`（分段覆盖）。
     // 可用占位符：{botName} {roleText} {participation}
-    systemPromptOverride: ''
+    systemPromptOverride: '',
+    // 当前人设来自哪个模板（内置 id 或 custom_xxx）。
+    // 有这个字段才能稳定回答"现在用的是哪条人设" —— 之前靠 roleText 文本比对，
+    // 用户改一个字就匹配不到，编辑/删除按钮会莫名消失或退化成"另存为"。
+    // 空串 = 手写内容，不对应任何模板。
+    templateId: ''
   },
   // 用户自定义人设库（保存在配置里，可在设置页添加/选择）
   customPersonas: [],
+  // 系统提示词的**分段覆盖**：{ [sectionId]: '替换文本' }
+  // 只覆盖非锁定段（安全规则/工具协议在 prompt.js 的 PROMPT_SECTIONS 里标了 locked）；
+  // 删除该键或留空 = 用内置默认。段 id 见 GET /api/prompt-sections。
+  promptOverrides: {},
   // 按会话独立人设：{ [群号/QQ号]: { roleText, participation, customRules, systemPromptOverride } }
   // key 是白名单会话的 id（群号或私聊 QQ 号），值是该会话覆盖全局 persona 的字段；
   // 只覆盖写在这里的字段，其余（botName/selfNickname 等账号身份）永远用全局值 ——
@@ -332,6 +341,9 @@ export const DEFAULT_CONFIG = {
       // 自身记忆的衰减半衰期（天，L4b）：权重每过这么久衰减一半。
       // 只影响"注入取哪几条"与"超上限淘汰谁"，不影响已存内容。
       selfHalfLifeDays: 30,
+      // state 类自身记忆的有效期（小时）：超过就不再注入（盘里保留，UI 可删可恢复）。
+      // rule 类不过期。设 0 或负数 = 关闭过期（恢复旧行为）。
+      selfStateTtlHours: 72,
       // 媒体瘦身（②P3）：延续轮复用历史前缀时，把 base64 图片/视频换成文字占位。
       // 图片（尤其 base64）每轮重传是实打实的 token 大头，换占位后体积收敛、
       // 前缀也从此稳定。代价：切换那一刻前缀字节变了，当轮缓存会失效一次 ——
@@ -437,7 +449,7 @@ export const DEFAULT_CONFIG = {
   autoLearn: {
     enabled: false,        // 总开关，默认关（会额外花模型调用、会改行为）
     intervalTurns: 8,      // 每 N 轮续接评审一次
-    maxMemories: 2,        // 单次最多写几条记忆
+    maxMemories: 1,        // 单次最多写几条记忆
     createNewSkill: false, // 评审是否允许**新建**技能（关 = 只更新已存在的自动技能）
     maxAutoSkills: 10      // 自动创建的技能数量上限
   },

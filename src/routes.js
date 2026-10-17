@@ -44,6 +44,28 @@ import { getGlobalBlocklist, updateGlobalBlocklist, FIXED_PRICE_FEED_URL } from 
 import { listAccounts, removeAccount, loginAccount, publishModule, verifyInstallCodes, installByCode } from './market.js';
 import { detectDialect as detectThinkingDialect } from './thinking.js';
 
+// ── 自定义人设的稳定 id（2026-10-18）──────────────────────────────────
+// 旧实现拿**数组下标**当 id（`custom_0`）：删掉中间一个，后面条目的 id 全部前移，
+// 配置里指向"某个人设"的地方就指错了。现在每条自带 id 字段，老数据首次读取时补一次
+// 并写回 config，之后稳定。
+function newCustomPersonaId() {
+  return `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function customPersonaList() {
+  const list = Array.isArray(getConfig().customPersonas) ? getConfig().customPersonas : [];
+  let changed = false;
+  const next = list.map((p, i) => {
+    if (p && typeof p.id === 'string' && p.id.trim()) return p;
+    changed = true;
+    return { ...p, id: `custom_${i}_${Date.now().toString(36)}` };
+  });
+  if (changed) {
+    try { updateConfig({ customPersonas: next }); } catch { /* 写失败：本次内存生效 */ }
+  }
+  return next;
+}
+
 /**
  * 构建路由表。
  * @param {object} deps 依赖注入
@@ -360,8 +382,8 @@ export function createRoutes(deps) {
       handler: async ({ res, json }) => {
         const { PERSONAS } = await import('./personas.js');
         const builtins = Object.entries(PERSONAS).map(([id, p]) => ({ id, name: p.name, text: p.text, builtin: true }));
-        const customs = (getConfig().customPersonas || []).map((p, i) => ({
-          id: `custom_${i}`, name: p.name, text: p.text, customRules: p.customRules || '', builtin: false
+        const customs = customPersonaList().map((p) => ({
+          id: p.id, name: p.name, text: p.text, customRules: p.customRules || '', builtin: false
         }));
         return json(res, 200, { templates: [...builtins, ...customs] });
       }
@@ -373,20 +395,85 @@ export function createRoutes(deps) {
         const name = String(body.name ?? '').trim().slice(0, 50);
         const text = String(body.text ?? '').trim();
         if (!name || !text) return json(res, 400, { ok: false, error: '人设名称和角色设定都不能为空' });
-        const entry = { name, text };
+        const entry = { id: newCustomPersonaId(), name, text };
         if (String(body.customRules ?? '').trim()) entry.customRules = String(body.customRules).trim();
-        const next = [...(getConfig().customPersonas || []), entry];
+        const next = [...customPersonaList(), entry];
         updateConfig({ customPersonas: next });
-        return json(res, 200, { ok: true, templates: next });
+        return json(res, 200, { ok: true, id: entry.id, templates: next });
       }
     },
     {
-      method: 'DELETE', pattern: /^\/api\/persona-templates\/(custom_\d+)$/,
+      // 原地修改人设（2026-10-18）：此前只有 POST 新建 / DELETE 删除，改一次就变成
+      // 一个**新的人设**，模板库里原来那条纹丝不动。内置人设只读（写在代码里）。
+      method: 'PATCH', pattern: /^\/api\/persona-templates\/([\w.-]{1,60})$/,
+      handler: async ({ req, res, json, match }) => {
+        const id = match[1];
+        const { PERSONAS } = await import('./personas.js');
+        if (PERSONAS[id]) return json(res, 400, { ok: false, error: '内置人设只读，请「另存为」自定义人设后再改' });
+        const list = customPersonaList();
+        const idx = list.findIndex((p) => p.id === id);
+        if (idx < 0) return json(res, 404, { ok: false, error: '人设不存在' });
+
+        const body = (await bodyOf(req)) || {};
+        const cur = list[idx];
+        const name = body.name !== undefined ? String(body.name).trim().slice(0, 50) : cur.name;
+        const text = body.text !== undefined ? String(body.text).trim() : cur.text;
+        if (!name || !text) return json(res, 400, { ok: false, error: '人设名称和角色设定都不能为空' });
+        const customRules = body.customRules !== undefined ? String(body.customRules).trim() : (cur.customRules || '');
+
+        const next = list.slice();
+        next[idx] = { ...cur, name, text, customRules };
+        updateConfig({ customPersonas: next });
+
+        // 同步"当前正在用的人设"：**修改前的文本与 persona.roleText 完全一致**才同步。
+        // 这是为了不引入新字段（老数据没有 templateId）：只要当前用的就是这条模板，
+        // 改完立刻生效；已经手工改过 roleText 的会话不被动覆盖。
+        const persona = getConfig().persona || {};
+        let synced = false;
+        if (String(persona.roleText ?? '') === String(cur.text ?? '')) {
+          updateConfig({ persona: { ...persona, roleText: text, customRules } });
+          synced = true;
+        }
+        return json(res, 200, { ok: true, synced, template: next[idx] });
+      }
+    },
+    {
+      method: 'DELETE', pattern: /^\/api\/persona-templates\/([\w.-]{1,60})$/,
       handler: async ({ res, json, match }) => {
-        const idx = Number(match[1].replace('custom_', ''));
-        const next = (getConfig().customPersonas || []).filter((_, i) => i !== idx);
+        const id = match[1];
+        const next = customPersonaList().filter((p) => p.id !== id);
         updateConfig({ customPersonas: next });
         return json(res, 200, { ok: true });
+      }
+    },
+
+    // ── 系统提示词分段（2026-10-18）───────────────────────────────────
+    // 这些规则原先只能改代码。现在可逐段查看 / 覆盖 / 恢复默认。
+    // 安全规则与工具协议 locked（不可覆盖），其余段可覆盖，存在 config.promptOverrides。
+    {
+      method: 'GET', pattern: '/api/prompt-sections',
+      handler: async ({ res, json }) => {
+        const { listPromptSections } = await import('./prompt.js');
+        return json(res, 200, { sections: listPromptSections() });
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/prompt-sections',
+      handler: async ({ req, res, json }) => {
+        const body = (await bodyOf(req)) || {};
+        const id = String(body.id ?? '').trim();
+        const { PROMPT_SECTIONS } = await import('./prompt.js');
+        const sec = PROMPT_SECTIONS.find((s) => s.id === id);
+        if (!sec) return json(res, 404, { ok: false, error: '没有这一段' });
+        if (sec.locked) return json(res, 400, { ok: false, error: '这一段是锁定项，不允许覆盖' });
+
+        const text = String(body.text ?? '').trim();
+        const next = { ...(getConfig().promptOverrides || {}) };
+        // 留空 = 恢复默认：写**空串**而不是删键 —— updateConfig 走 deepMerge，
+        // 删掉的键会被基底值合回来，"恢复默认"就失效了（空串在读取侧等价于未覆盖）。
+        next[id] = text;
+        updateConfig({ promptOverrides: next });
+        return json(res, 200, { ok: true, overridden: Boolean(text) });
       }
     },
 
@@ -1587,6 +1674,32 @@ export function createRoutes(deps) {
         if (!entry) return json(res, 404, { ok: false, error: '回收站里没有这条' });
         emit('memory-update', { chatKey });
         return json(res, 200, { ok: true, entry });
+      }
+    },
+    {
+      // 删除单条自身记忆（按内容匹配）→ 进回收站，删错可恢复
+      method: 'DELETE', pattern: /^\/api\/memory-files\/(group|private)_(\d+)\/self\/remove$/,
+      handler: async ({ req, res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        let body = {};
+        try { body = (await bodyOf(req)) || {}; } catch { /* 无 body 视作空 */ }
+        const content = String(body.content ?? '').trim();
+        if (!content) return json(res, 400, { ok: false, error: 'content 不能为空' });
+        if (typeof memory.removeSelf !== 'function') return json(res, 400, { ok: false, error: '当前版本不支持删除' });
+        const entry = memory.removeSelf(chatKey, content);
+        if (!entry) return json(res, 404, { ok: false, error: '没有这条自身记忆' });
+        emit('memory-update', { chatKey });
+        return json(res, 200, { ok: true, entry });
+      }
+    },
+    {
+      // 清空某会话的全部自身记忆（整批进回收站）
+      method: 'DELETE', pattern: /^\/api\/memory-files\/(group|private)_(\d+)\/self$/,
+      handler: async ({ res, json, match }) => {
+        const chatKey = `${match[1]}:${match[2]}`;
+        memory.clearSelf(chatKey, { toEvicted: true });
+        emit('memory-update', { chatKey });
+        return json(res, 200, { ok: true });
       }
     },
     {

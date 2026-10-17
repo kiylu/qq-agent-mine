@@ -19,7 +19,7 @@ const {
   distillBuffer, collectAssistantText, parseDistillResult, parseDistillEntries,
   DISTILL_SYSTEM_PROMPT, DISTILL_SYSTEM_PROMPT_BASIC
 } = await import('../src/conversation.js');
-const { MemoryStore, initialSelfScore, effectiveSelfScore } = await import('../src/memory.js');
+const { MemoryStore, initialSelfScore, effectiveSelfScore, isSelfExpired } = await import('../src/memory.js');
 
 const pass = [], fail = [];
 async function check(name, fn) {
@@ -356,6 +356,79 @@ await check('L1：signals=false 时退回旧口径提示词', async () => {
     }
   });
   assert.equal(sawSystem, DISTILL_SYSTEM_PROMPT_BASIC);
+});
+
+// ── 2026-10-17：state 过期（治"一次性计划塞满注入窗口"）──────────────────────
+
+await check('TTL：state 超期后不再注入，rule 不受影响', async () => {
+  const m = new MemoryStore();
+  const k = 'group:930';
+  m.appendSelf(k, '旧状态：还在猜海龟汤的谜底', { kind: 'state' });
+  m.appendSelf(k, '旧规则：别用总结式收尾', { kind: 'rule' });
+  // 手工把两条的 createdAt 拨到 5 天前（模拟过期）
+  const file = path.join(__testDataDir, 'memory', 'group_930', '_self.json');
+  const arr = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const e of arr) e.createdAt = Date.now() - 5 * 86400000;
+  fs.writeFileSync(file, JSON.stringify(arr), 'utf8');
+
+  const text = m.formatSelfForPrompt(k);
+  assert.ok(text.includes('别用总结式收尾'), 'rule 不该过期');
+  assert.ok(!text.includes('旧状态'), 'state 超期后不该注入');
+  const old = m.selfNotes(k).find((e) => e.content.includes('旧状态'));
+  assert.equal(old.expired, true, 'selfNotes 应标记 expired');
+  const rule = m.selfNotes(k).find((e) => e.content.includes('旧规则'));
+  assert.equal(rule.expired, false);
+});
+
+await check('TTL：isSelfExpired 的边界（rule 恒不过期 / ttl<=0 关闭）', async () => {
+  const now = Date.now();
+  const old = now - 10 * 86400000;
+  assert.equal(isSelfExpired({ kind: 'state', createdAt: old }, now, 72), true);
+  assert.equal(isSelfExpired({ kind: 'state', createdAt: now }, now, 72), false);
+  assert.equal(isSelfExpired({ kind: 'rule', createdAt: old }, now, 72), false, 'rule 永不过期');
+  assert.equal(isSelfExpired({ kind: 'state', createdAt: old }, now, 0), false, 'ttl=0 表示关闭');
+});
+
+await check('自身状态：removeSelf 移入回收站并可恢复', async () => {
+  const m = new MemoryStore();
+  const k = 'group:931';
+  m.appendSelf(k, '我准备回一句吐槽', { kind: 'state' });
+  m.appendSelf(k, '别用总结式收尾', { kind: 'rule' });
+  const removed = m.removeSelf(k, '我准备回一句吐槽');
+  assert.ok(removed, '应删掉一条');
+  assert.equal(m.selfNotes(k).length, 1);
+  assert.ok(m.evictedSelf(k).some((e) => e.content === '我准备回一句吐槽'), '应进回收站');
+  const back = m.restoreSelf(k, '我准备回一句吐槽');
+  assert.ok(back, '应能恢复');
+  assert.equal(m.selfNotes(k).length, 2);
+});
+
+await check('自身状态：clearSelf({toEvicted}) 整批进回收站', async () => {
+  const m = new MemoryStore();
+  const k = 'group:932';
+  m.appendSelf(k, '甲', { kind: 'state' });
+  m.appendSelf(k, '乙', { kind: 'rule' });
+  m.clearSelf(k, { toEvicted: true });
+  assert.equal(m.selfNotes(k).length, 0);
+  assert.equal(m.evictedSelf(k).length, 2, '两条都该在回收站');
+});
+
+await check('L1：蒸馏提示词含「不要写」清单，且上限收到 3 条', async () => {
+  assert.ok(DISTILL_SYSTEM_PROMPT.includes('【不要写】'), '应有排除清单');
+  assert.ok(DISTILL_SYSTEM_PROMPT.includes('打算 / 准备 / 决定'), '应点名"计划类"污染');
+  assert.ok(DISTILL_SYSTEM_PROMPT.includes('最多 3 条'), '上限应收到 3');
+});
+
+await check('L1：关闭蒸馏最多写 3 条（模型多给也不收）', async () => {
+  const m = new MemoryStore();
+  const written = await distillBuffer({
+    memory: m, chatKey: 'group:933',
+    messages: [{ role: 'assistant', content: '想了五件事' }],
+    callModel: async () => ({
+      message: { content: JSON.stringify([1, 2, 3, 4, 5].map((i) => ({ kind: 'state', content: `第${i}条` }))) }
+    })
+  });
+  assert.equal(written.itemCount, 3);
 });
 
 console.log(`\n自身记忆与蒸馏：通过 ${pass.length}，失败 ${fail.length}`);

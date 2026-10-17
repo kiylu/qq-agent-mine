@@ -117,6 +117,34 @@ export function effectiveSelfScore(entry, now = Date.now(), halfLifeDays = SELF_
   return score * Math.pow(0.5, ageDays / hl);
 }
 
+/**
+ * state 条目的有效期（小时）。超过就不再注入 —— 但**不删盘**（UI 里仍可见、可手动恢复）。
+ *
+ * 为什么需要：`state` 天然短命（"还在猜的谜底""对方问了还没答的问题"），
+ * 但原先一旦写入就永久占着注入窗口，只能靠 40 条存储上限挤掉。而注入窗口只有 10 条，
+ * 于是一次性计划（"我准备回一句吐槽"）能把窗口刷满，真正要接上的事实反而挤不进去。
+ * `rule` 不过期（"这类事以后该怎么做"本来就是长期有效的）。
+ */
+const SELF_STATE_TTL_HOURS = 72;
+
+function selfStateTtlHours() {
+  const raw = getConfig()?.continuation?.selfStateTtlHours;
+  if (raw === undefined || raw === null || raw === '') return SELF_STATE_TTL_HOURS;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return SELF_STATE_TTL_HOURS;
+  return v > 0 ? v : 0;   // 0 = 关闭过期
+}
+
+/** 条目是否已过期（只有 state 会过期；ttl<=0 表示不启用过期）。 */
+export function isSelfExpired(entry, now = Date.now(), ttlHours) {
+  if (!entry || entry.kind === 'rule') return false;
+  const h = ttlHours === undefined ? selfStateTtlHours() : Number(ttlHours);
+  if (!Number.isFinite(h) || h <= 0) return false;
+  const born = Number(entry.lastHitAt) || Number(entry.createdAt) || 0;
+  if (!born) return false;
+  return now - born > h * 3600000;
+}
+
 function loadMember(chatKey, userId, name = '') {
   const file = memberFile(chatKey, userId, name);
   const raw = readJson(file, null);
@@ -605,7 +633,30 @@ export class MemoryStore {
 
   /** 读全部自身记忆（新的在前）。 */
   selfNotes(chatKey) {
-    return loadSelf(chatKey).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const now = Date.now();
+    const ttl = selfStateTtlHours();
+    // expired 只是**读时标记**（不写盘）：过期的 state 已不再注入，UI 用它做区分显示。
+    return loadSelf(chatKey)
+      .map((e) => ({ ...e, expired: isSelfExpired(e, now, ttl) }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  /**
+   * 删除一条自身记忆（按内容精确匹配），移入回收站 —— 与超上限淘汰共用同一条路径，
+   * 所以删错了还能在「已清理」里恢复。返回被删条目，没找到返回 null。
+   */
+  removeSelf(chatKey, content) {
+    const text = String(content ?? '').trim();
+    if (!text) return null;
+    const list = loadSelf(chatKey);
+    const idx = list.findIndex((e) => e.content === text);
+    if (idx < 0) return null;
+    const [item] = list.splice(idx, 1);
+    try { writeJson(selfFile(chatKey), list); } catch (error) {
+      console.warn('[memory] 写自身记忆失败:', error?.message ?? error);
+    }
+    this.#pushEvictedSelf(chatKey, [item]);
+    return item;
   }
 
   /** 是否已有自身记忆（用于"蒸馏前先看有没有值得写的"这类判断）。 */
@@ -613,8 +664,13 @@ export class MemoryStore {
     return loadSelf(chatKey).length > 0;
   }
 
-  /** 清空某会话的自身记忆（随 removeChat 一起清；也可单独调）。回收站不受影响。 */
-  clearSelf(chatKey) {
+  /** 清空某会话的自身记忆（随 removeChat 一起清；也可单独调）。
+   *  `toEvicted=true` 时整批进回收站（管理端手动清空走这条，误清可恢复）。 */
+  clearSelf(chatKey, { toEvicted = false } = {}) {
+    if (toEvicted) {
+      const list = loadSelf(chatKey);
+      if (list.length) this.#pushEvictedSelf(chatKey, list);
+    }
     try { fs.rmSync(selfFile(chatKey), { force: true }); return true; } catch { return false; }
   }
 
@@ -669,9 +725,11 @@ export class MemoryStore {
    * 就先不被注入**（等于白记）—— 这是权重机制里最关键的一环。
    */
   formatSelfForPrompt(chatKey, { limit = 10, halfLifeDays } = {}) {
-    const list = loadSelf(chatKey);
-    if (!list.length) return '';
     const now = Date.now();
+    const ttl = selfStateTtlHours();
+    // 过期的 state 不注入（盘里还留着，UI 可见可恢复）—— 否则一次性计划会长期占住窗口。
+    const list = loadSelf(chatKey).filter((e) => !isSelfExpired(e, now, ttl));
+    if (!list.length) return '';
     const picked = list
       .map((e) => ({ e, s: effectiveSelfScore(e, now, halfLifeDays) }))
       .sort((a, b) => (b.s !== a.s ? b.s - a.s : (b.e.createdAt || 0) - (a.e.createdAt || 0)))
@@ -679,7 +737,7 @@ export class MemoryStore {
       .map((x) => x.e)
       // 注入顺序回到时间升序：读起来自然，且与旧行为一致（只改了"选哪几条"）。
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-    const lines = ['【自身状态】以下是你自己需要跨轮保留的事（未完成的目标、自己定的规则、待办、答案等）：'];
+    const lines = ['【自身状态】你自己跨轮保留的事（「规则」长期有效，「状态」会过期）：'];
     for (const e of picked) lines.push(`- ${e.content}`);
     return lines.join('\n');
   }

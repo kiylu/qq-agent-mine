@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, getConfig, updateConfig } from './config.js';
-import { collectAssistantText } from './conversation.js';
+import { collectAssistantText, DISTILL_NOT_RECORD } from './conversation.js';
 import { listMarkdownSkills, getMarkdownSkill, saveMarkdownSkill } from './markdown-skills.js';
 
 const STATS_FILE = path.join(DATA_DIR, 'auto-learn-stats.json');
@@ -46,7 +46,7 @@ export function autoLearnConfig() {
     // 每 N 轮续接评审一次（1 轮就评审 = 每轮多一次调用，不划算）
     intervalTurns: clampInt(c.intervalTurns, 1, 50, 8),
     // 单次评审最多写几条记忆
-    maxMemories: clampInt(c.maxMemories, 1, 5, 2),
+    maxMemories: clampInt(c.maxMemories, 1, 5, 1),
     // 评审是否允许**新建**技能（关 = 只更新已存在的自动技能）
     createNewSkill: c.createNewSkill === true,
     // 自动创建的技能数量上限（0 = 不许新建，但允许更新已有的自动技能）
@@ -58,7 +58,7 @@ export function updateAutoLearnConfig(patch = {}) {
   const next = {};
   if (patch.enabled !== undefined) next.enabled = !!patch.enabled;
   if (patch.intervalTurns !== undefined) next.intervalTurns = clampInt(patch.intervalTurns, 1, 50, 8);
-  if (patch.maxMemories !== undefined) next.maxMemories = clampInt(patch.maxMemories, 1, 5, 2);
+  if (patch.maxMemories !== undefined) next.maxMemories = clampInt(patch.maxMemories, 1, 5, 1);
   if (patch.createNewSkill !== undefined) next.createNewSkill = !!patch.createNewSkill;
   if (patch.maxAutoSkills !== undefined) next.maxAutoSkills = clampInt(patch.maxAutoSkills, 0, 100, 10);
   if (Object.keys(next).length) updateConfig({ autoLearn: next });
@@ -106,11 +106,14 @@ export const AUTO_REVIEW_SYSTEM_PROMPT = [
   '请判断：这一段有没有值得留下来的东西？两类：',
   '',
   '- **memory（记忆）**：',
-  '  · kind=state —— 现在的状况：未完成的目标、谜底/答案、待办；',
-  '  · kind=rule —— 以后该怎么做：群友**纠正了它的说话方式/做法**（"别每次都总结""太正式了"），',
-  '    或它自己定下的规矩。这类比普通状态重要。',
+  '  · kind=state —— 跨轮必须接得上的事实：还在进行的多轮活动（没结束的游戏、谜底）、',
+  '    答应了但没做的事、对方问了还没答的问题；',
+  '  · kind=rule —— 以后该怎么做：群友**真的开口纠正过**的说话方式/做法，',
+  '    或它明确承诺长期遵守的规矩。这类比普通状态重要。',
   '- **skill（技能）**：一段**可复用的步骤**（如"怎么主持一局海龟汤"）。',
   '  只在这段真的摸索出了成型的流程时才写；随手闲聊不要写。',
+  '',
+  DISTILL_NOT_RECORD,
   '',
   '要求：',
   '- **绝大多数情况应该什么都不写。** 群聊单次价值低，为了沉淀而沉淀只会制造噪声。',
@@ -140,7 +143,11 @@ export function buildAutoReviewInput({
   const cot = collectAssistantText(messages, { maxChars, reasonings });
   const parts = [];
   if (cot) parts.push('【最近的内部思考】', cot);
-  const notes = (Array.isArray(selfNotes) ? selfNotes : []).slice(0, 10);
+  // 过期的 state 不再注入主提示词，也不该当作评审的上下文 —— 否则模型会基于
+  // 一条早已失效的计划继续写新条目（`selfNotes()` 会带 expired 标记）。
+  const notes = (Array.isArray(selfNotes) ? selfNotes : [])
+    .filter((e) => !(e && typeof e === 'object' && e.expired))
+    .slice(0, 10);
   if (notes.length) {
     parts.push('', '【当前自身状态】');
     for (const e of notes) parts.push(`- ${typeof e === 'string' ? e : String(e?.content ?? '')}`);
@@ -157,7 +164,7 @@ export function buildAutoReviewInput({
  * 解析评审输出。容错：可能包 markdown 围栏、可能给纯字符串数组。
  * @returns {{memories: Array<{content:string, kind:'state'|'rule'}>, skill: object|null}}
  */
-export function parseAutoReview(text, { maxMemories = 2 } = {}) {
+export function parseAutoReview(text, { maxMemories = 1 } = {}) {
   const empty = { memories: [], skill: null };
   let s = String(text ?? '').trim();
   if (!s) return empty;
@@ -258,7 +265,7 @@ export function applyAutoReview({
  */
 export async function reviewConversation({
   memory, chatKey, messages, reasonings, callModel,
-  ownerActive = false, maxMemories = 2, createNewSkill = false, maxAutoSkills = 10, maxChars = 6000
+  ownerActive = false, maxMemories = 1, createNewSkill = false, maxAutoSkills = 10, maxChars = 6000
 } = {}) {
   const no = (status, reason) => ({ status, reason, memories: 0, skill: null });
   if (!memory || !chatKey || typeof callModel !== 'function') {

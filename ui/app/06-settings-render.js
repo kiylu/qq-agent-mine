@@ -429,12 +429,23 @@ function renderPersonaSection(c) {
     <div class="field"><label>管理员附加规则（可选，追加到系统提示）</label>
       <textarea id="cfg-customrules" class="persona-role-text" style="min-height:100px">${esc(c.persona.customRules || '')}</textarea></div>
     <div class="field">
-      <label>系统提示词覆盖（高级 · 可选）</label>
-      <textarea id="cfg-sysprompt" class="persona-role-text" style="min-height:120px" placeholder="留空 = 使用内置默认系统提示词（含安全规则/工具协议/反AI味等）。填写后将整体替换默认行为准则。">${esc(c.persona.systemPromptOverride || '')}</textarea>
-      <div class="hint">
-        ⚠️ 高级功能：填写后会<b>整体替换</b>内置系统提示词，默认的安全规则、工具协议、反 AI 味等约束全部失效（需自行在覆盖文本里写明）。
-        可用占位符：<code>{botName}</code> <code>{roleText}</code> <code>{participation}</code>。留空则完全不影响现有行为。
+      <label>系统提示词（高级）</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 8px">
+        <button class="btn btn-small" id="cfg-prompt-sections-btn">逐段编辑系统提示词</button>
+        <span class="muted" style="font-size:12px">推荐：只改某一段（反 AI 味 / 表情包 / 引用规则等），其余保持默认。</span>
       </div>
+      <details class="collapsible" style="max-width:100%">
+        <summary><span class="muted">整体替换（不常用）</span></summary>
+        <div style="padding:12px 14px 14px;white-space:normal">
+          <textarea id="cfg-sysprompt" class="persona-role-text" style="min-height:120px;width:100%" placeholder="留空 = 使用内置默认系统提示词。填写后将整体替换默认的行为准则段。">${esc(c.persona.systemPromptOverride || '')}</textarea>
+          <div class="hint" style="margin-top:8px">
+            填写后会<b>整体替换</b>内置的行为准则段（反 AI 味、主体性、节奏等）。
+            <b>安全规则与工具协议不受影响</b>——无论这里写什么，它们都会追加在最后。
+            可用占位符：<code>{botName}</code> <code>{roleText}</code> <code>{participation}</code>。
+            只想改一两段的话，用上面的「逐段编辑」更省事。
+          </div>
+        </div>
+      </details>
     </div>`;
 
   // 分会话模式：按钮网格（白名单 ∪ 已配置过的会话）
@@ -572,6 +583,7 @@ function openPerChatPersonaModal(chatKey) {
     body: `
       <div style="display:flex;gap:8px;margin-bottom:8px">
         <input type="text" id="pcp-pick" readonly placeholder="点击选择人设" value="${esc(conf.roleText ? (Object.values(state.personaTemplates || {}).find((p) => p.text === conf.roleText)?.name || '自定义') : '')}" style="flex:1;cursor:pointer" />
+        <button class="btn btn-small" id="pcp-edit-btn">编辑人设</button>
         <button class="btn btn-small" id="pcp-new-btn">＋ 添加人设</button>
       </div>
       <div class="field"><label>参与度（留空跟随全局）</label>
@@ -625,6 +637,34 @@ function openPerChatPersonaModal(chatKey) {
   overlay.querySelector('#pcp-new-btn').addEventListener('click', () => {
     // 复用统一编辑器的添加流程：加完模板直接填进本会话的角色设定
     openPersonaCreateModal();
+  });
+  // 分会话也能改人设模板（2026-10-18）：自定义 → 原地改；内置/手写 → 另存为副本。
+  // 保存后把新内容回填到本会话的输入框 —— 它不在设置页表单里，全局回填对它无效。
+  overlay.querySelector('#pcp-edit-btn').addEventListener('click', () => {
+    const roleNow = overlay.querySelector('#pcp-roletext').value;
+    const rulesNow = overlay.querySelector('#pcp-customrules').value;
+    if (!String(roleNow).trim()) {
+      alert('这个会话还没有独立角色设定：先「选择人设」或直接填写，再来编辑。');
+      return;
+    }
+    const applyBack = ({ name, text, customRules }) => {
+      overlay.querySelector('#pcp-roletext').value = text;
+      overlay.querySelector('#pcp-customrules').value = customRules;
+      overlay.querySelector('#pcp-pick').value = name;
+    };
+    const found = Object.entries(state.personaTemplates || {}).find(([, p]) => p.text === roleNow);
+    const id = found ? found[0] : '';
+    const tpl = state.personaTemplates[id];
+    if (tpl && id.startsWith('custom_')) {
+      openPersonaEditor({ ...tpl, text: roleNow || tpl.text }, { onSaved: applyBack });
+    } else {
+      openPersonaEditor({
+        id: '',
+        name: tpl ? `${tpl.name}（副本）` : '自定义人设',
+        text: roleNow,
+        customRules: rulesNow
+      }, { prefill: true, onSaved: applyBack });
+    }
   });
 
   // 直接 POST 落盘：不走"写隐藏 JSON + 等表单链保存"的老路。
@@ -1887,7 +1927,7 @@ function buildAutoLearnHtml() {
         <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-top:10px">
           ${alInline('启用自动学习', `<input type="checkbox" id="al-enabled" style="${AL_CHK}" ${s.enabled ? 'checked' : ''} />`)}
           ${alInline('轮复盘一次', `每 <input type="number" class="inp" id="al-interval" min="1" max="50" step="1" value="${Number(s.intervalTurns) || 8}" style="width:64px" />`)}
-          ${alInline('条记忆', `单次最多 <input type="number" class="inp" id="al-maxmem" min="1" max="5" step="1" value="${Number(s.maxMemories) || 2}" style="width:56px" />`)}
+          ${alInline('条记忆', `单次最多 <input type="number" class="inp" id="al-maxmem" min="1" max="5" step="1" value="${Number(s.maxMemories) || 1}" style="width:56px" />`)}
           ${alInline('允许新建技能', `<input type="checkbox" id="al-create" style="${AL_CHK}" ${s.createNewSkill ? 'checked' : ''} />`)}
           ${alInline('自动技能上限', `<input type="number" class="inp" id="al-maxskills" min="0" max="100" step="1" value="${Number(s.maxAutoSkills) || 0}" style="width:64px" />`)}
         </div>

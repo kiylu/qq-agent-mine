@@ -849,7 +849,19 @@ function bindSettingsEvents(c) {
 
   // ── 人设区块事件 ──
   const personaPick = $('#cfg-persona-pick');
+  /**
+   * 当前用的是哪条人设模板。
+   *
+   * ⚠️ 别再用 roleText 文本比对：用户改一个字就匹配不到，编辑/删除按钮会莫名消失，
+   * 「编辑」还会退化成「另存为」。现在优先读显式记录（输入框 dataset → 配置），
+   * 文本比对只作为老数据的兜底。
+   */
   function currentPersonaId() {
+    const pickEl = $('#cfg-persona-pick');
+    const fromPick = String(pickEl?.dataset.templateId || '');
+    if (fromPick && state.personaTemplates[fromPick]) return fromPick;
+    const fromCfg = String(state.config?.persona?.templateId || '');
+    if (fromCfg && state.personaTemplates[fromCfg]) return fromCfg;
     const roleText = $('#cfg-roletext')?.value ?? '';
     const found = Object.entries(state.personaTemplates || {}).find(([, p]) => p.text === roleText);
     return found ? found[0] : '';
@@ -863,14 +875,47 @@ function bindSettingsEvents(c) {
       if (isCustom) uiShow(delBtn, () => delBtn.classList.remove('hidden'), animate);
       else uiHide(delBtn, () => delBtn.classList.add('hidden'), animate);
     }
+    // 文案固定（不再随当前人设跳），行为在点击时按 id 决定。
     const hint = $('#persona-pick-hint');
-    if (hint) hint.textContent = tpl ? (tpl.builtin ? '内置人设' : '自定义人设') : '';
+    if (hint) {
+      hint.textContent = isCustom
+        ? '自定义人设 —— 点「编辑人设」可原地修改。'
+        : (tpl
+          ? '内置人设只读 —— 点「编辑人设」会另存为一份可改的副本。'
+          : '当前角色设定是手写的，未对应任何模板；点「编辑人设」可存成模板。');
+    }
   }
   if (personaPick) {
     personaPick.addEventListener('click', () => openPersonaPicker());
   }
   const newPersonaBtn = $('#new-persona-btn');
   if (newPersonaBtn) newPersonaBtn.addEventListener('click', () => openPersonaCreateModal());
+  // 编辑人设：自定义 → 原地改（PATCH）；内置/手写 → 另存为副本。
+  const editPersonaBtn = $('#edit-persona-btn');
+  if (editPersonaBtn) editPersonaBtn.addEventListener('click', () => {
+    const id = currentPersonaId();
+    const tpl = state.personaTemplates[id];
+    if (tpl && id.startsWith('custom_')) {
+      // 正文用**当前角色设定**（用户可能已经改过），改了什么就存什么。
+      const liveRole = ($('#cfg-roletext')?.value || '').trim();
+      const liveRules = ($('#cfg-customrules')?.value || '').trim();
+      openPersonaEditor({ ...tpl, text: liveRole || tpl.text, customRules: liveRules || tpl.customRules || '' });
+    } else {
+      // 内容三层兜底：输入框（可能刚改过）→ 配置里的当前值 → 模板原文。
+      // 只读 DOM 会踩"元素不在当前渲染分支里"的坑（分会话模式没有 #cfg-roletext）。
+      const liveRole = ($('#cfg-roletext')?.value || '').trim() || String(state.config?.persona?.roleText || '');
+      const liveRules = ($('#cfg-customrules')?.value || '').trim() || String(state.config?.persona?.customRules || '');
+      openPersonaEditor({
+        id: '',
+        name: tpl ? `${tpl.name}（副本）` : '自定义人设',
+        text: liveRole || tpl?.text || '',
+        customRules: liveRules || tpl?.customRules || ''
+      }, { prefill: true });
+    }
+  });
+  // 系统提示词逐段编辑（2026-10-18）：原先这些规则只能改代码。
+  const promptSectionsBtn = $('#cfg-prompt-sections-btn');
+  if (promptSectionsBtn) promptSectionsBtn.addEventListener('click', () => openPromptSectionsModal());
   const delPersonaBtn = $('#del-persona-btn');
   if (delPersonaBtn) delPersonaBtn.addEventListener('click', async () => {
     const id = currentPersonaId();
@@ -882,6 +927,13 @@ function bindSettingsEvents(c) {
       await api(`/api/persona-templates/${id}`, { method: 'DELETE', body: '{}' });
       $('#cfg-roletext').value = state.personaTemplates.xiaojingyu?.text || '';
       $('#cfg-customrules').value = '';
+      // 删掉后回落到内置默认人设：来源标记也要跟着改，否则下次保存会把
+      // 已删除的 id 又写回 persona.templateId。
+      const pickEl = $('#cfg-persona-pick');
+      if (pickEl) {
+        pickEl.value = state.personaTemplates.xiaojingyu?.name || '';
+        pickEl.dataset.templateId = 'xiaojingyu';
+      }
       // 删除 = 表单值被程序化改回默认人设：同样派发 input 触发自动保存，
       // 否则"删完切走"后配置里还是被删掉的那套角色设定（保存从未发起）。
       $('#cfg-roletext')?.dispatchEvent(new Event('input', { bubbles: true }));

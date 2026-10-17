@@ -14,6 +14,17 @@
   不得改写既有 system 消息、available() 判定必须稳定）。
 - **工具可用性唯一口径**：`src/tool-registry.js` 的 7 道判定，模块不得另写一份。
 - **旁路模型调用不得污染主前缀**：用独立 messages，结果只落盘。
+- **`updateConfig` 是 deepMerge**：map 型配置要支持"删除某项"时**不能靠删键**（会被基底值合回来），
+  只能用**空值语义**（如 `promptOverrides[id] = ''` = 恢复默认）。数组型是整体替换。
+- **系统提示词可分段覆盖**：`src/prompt.js` 的 `PROMPT_SECTIONS`（14 段），
+  覆盖存 `config.promptOverrides`，`security`/`tools` 锁定不可覆盖；
+  UI 在设置 → 角色设定 →「逐段编辑系统提示词」。无覆盖时输出与旧版逐字节相同。
+
+## UI 约定
+
+- `.coll-body` 有 `white-space: pre-wrap`（给系统提示/工具结果用的**文本容器**），
+  **不要用它包表单控件** —— HTML 缩进会被当空白保留，出现大段空隙。表单用普通 div。
+- 内置人设（`src/personas.js`）**只读**；要改走「另存为副本」→ 生成自定义人设再编辑。
 
 ## 项目架构要点（速查）
 

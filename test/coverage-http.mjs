@@ -211,11 +211,59 @@ c.section('3. 人设模板');
     assert.equal(r.status, 400, '空名称应 400');
   });
 
+  await c.check('PATCH /api/persona-templates/:id：原地修改（不产生副本）', async () => {
+    const r = await hit('PATCH', `/api/persona-templates/${customId}`, {
+      body: { name: '覆盖人设（改）', text: '改过的角色设定。' }
+    });
+    assert.equal(r.status, 200, `应 200，实际 ${r.status}`);
+    assert.equal(r.data.ok, true);
+    const list = await hit('GET', '/api/persona-templates');
+    const found = list.data.templates.find((t) => t.id === customId);
+    assert.ok(found, '改完仍应是同一个 id');
+    assert.equal(found.name, '覆盖人设（改）');
+    assert.equal(found.text, '改过的角色设定。');
+    assert.equal(list.data.templates.filter((t) => t.name.startsWith('覆盖人设')).length, 1, '不应产生副本');
+  });
+
+  await c.check('PATCH /api/persona-templates/:id：内置只读 400 / 不存在 404', async () => {
+    const b = await hit('PATCH', '/api/persona-templates/xiaojingyu', { body: { name: 'x' } });
+    assert.equal(b.status, 400, '内置人设应 400');
+    const nf = await hit('PATCH', '/api/persona-templates/custom_nope', { body: { name: 'x' } });
+    assert.equal(nf.status, 404, '不存在应 404');
+  });
+
   await c.check('DELETE /api/persona-templates/:id：删除自定义模板', async () => {
     const r = await hit('DELETE', `/api/persona-templates/${customId}`);
     assert.equal(r.status, 200);
     const list = await hit('GET', '/api/persona-templates');
-    assert.ok(!list.data.templates.some((t) => t.name === '覆盖人设'), '删除后不应再出现');
+    assert.ok(!list.data.templates.some((t) => t.id === customId), '删除后不应再出现');
+  });
+}
+
+{
+  // ── 系统提示词分段（2026-10-18）──
+  await c.check('GET /api/prompt-sections：返回分段与锁定标记', async () => {
+    const r = await hit('GET', '/api/prompt-sections');
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.data.sections) && r.data.sections.length > 0, '应返回分段');
+    assert.ok(r.data.sections.some((s) => s.locked), '应含锁定段（安全规则/工具协议）');
+    assert.ok(r.data.sections.every((s) => typeof s.effectiveText === 'string'), '每段都应有生效文本');
+  });
+
+  await c.check('POST /api/prompt-sections：覆盖 / 锁定 400 / 未知 404 / 清空恢复', async () => {
+    const ok = await hit('POST', '/api/prompt-sections', { body: { id: 'antiAi', text: '覆盖测试文本' } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.data.overridden, true);
+
+    const locked = await hit('POST', '/api/prompt-sections', { body: { id: 'security', text: 'x' } });
+    assert.equal(locked.status, 400, '锁定段应 400');
+
+    const nf = await hit('POST', '/api/prompt-sections', { body: { id: 'nope', text: 'x' } });
+    assert.equal(nf.status, 404, '未知段应 404');
+
+    const reset = await hit('POST', '/api/prompt-sections', { body: { id: 'antiAi', text: '' } });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.data.overridden, false, '清空应恢复默认');
   });
 }
 
@@ -652,6 +700,33 @@ c.section('7. 会话 / 存档 / 记忆');
     assert.equal(r.data.ok, true);
     const back = await hit('GET', '/api/memory-files/group_456');
     assert.equal((back.data.evictedSelf || []).length, 0, '清空后回收站应为空');
+  });
+
+  await c.check('DELETE /api/memory-files/:key/self/remove：删除单条自身记忆（进回收站）', async () => {
+    app.memory.appendSelf('group:456', '要删掉的自身状态');
+    const bad = await hit('DELETE', '/api/memory-files/group_456/self/remove', { body: {} });
+    assert.equal(bad.status, 400, 'content 为空应 400');
+
+    const miss = await hit('DELETE', '/api/memory-files/group_456/self/remove', { body: { content: '根本没有这条' } });
+    assert.equal(miss.status, 404, '不存在应 404');
+
+    const okr = await hit('DELETE', '/api/memory-files/group_456/self/remove', { body: { content: '要删掉的自身状态' } });
+    assert.equal(okr.status, 200, `删除应 200，实际 ${okr.status}`);
+    assert.equal(okr.data.ok, true);
+
+    const after = await hit('GET', '/api/memory-files/group_456');
+    assert.ok(!(after.data.selfNotes || []).some((e) => e.content === '要删掉的自身状态'), '应已从自身状态移除');
+    assert.ok((after.data.evictedSelf || []).some((e) => e.content === '要删掉的自身状态'), '应进回收站');
+  });
+
+  await c.check('DELETE /api/memory-files/:key/self：清空自身状态（整批进回收站）', async () => {
+    app.memory.appendSelf('group:456', '清空前的一条');
+    const r = await hit('DELETE', '/api/memory-files/group_456/self');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true);
+    const after = await hit('GET', '/api/memory-files/group_456');
+    assert.equal((after.data.selfNotes || []).length, 0, '自身状态应清空');
+    assert.ok((after.data.evictedSelf || []).some((e) => e.content === '清空前的一条'), '应进回收站');
   });
 
   await c.check('GET /api/markdown-skills：返回设置与技能列表', async () => {

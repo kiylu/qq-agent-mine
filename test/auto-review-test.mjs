@@ -18,7 +18,8 @@ process.env.QQ_AGENT_PLUGINS_DIR = path.join(tmp, 'plugins');
 
 const {
   autoLearnConfig, updateAutoLearnConfig, autoLearnStats,
-  buildAutoReviewInput, parseAutoReview, applyAutoReview, reviewConversation
+  buildAutoReviewInput, parseAutoReview, applyAutoReview, reviewConversation,
+  AUTO_REVIEW_SYSTEM_PROMPT
 } = await import('../src/auto-review.js');
 const { MemoryStore } = await import('../src/memory.js');
 const md = await import('../src/markdown-skills.js');
@@ -32,11 +33,11 @@ async function check(name, fn) {
 const KEY = 'group:70001';
 
 // ═══ 1. 配置 ═══
-await check('配置默认：默认关、间隔 8、单次 2 条、不新建技能、上限 10', () => {
+await check('配置默认：默认关、间隔 8、单次 1 条、不新建技能、上限 10', () => {
   const c = autoLearnConfig();
   assert.equal(c.enabled, false, '默认必须关');
   assert.equal(c.intervalTurns, 8);
-  assert.equal(c.maxMemories, 2);
+  assert.equal(c.maxMemories, 1);
   assert.equal(c.createNewSkill, false);
   assert.equal(c.maxAutoSkills, 10);
 });
@@ -46,7 +47,7 @@ await check('配置钳制：越界值被夹到合法区间', () => {
   assert.equal(c.intervalTurns, 50);
   assert.equal(c.maxMemories, 1);
   assert.equal(c.maxAutoSkills, 0);
-  updateAutoLearnConfig({ intervalTurns: 8, maxMemories: 2, maxAutoSkills: 10 });
+  updateAutoLearnConfig({ intervalTurns: 8, maxMemories: 1, maxAutoSkills: 10 });
 });
 
 // ═══ 2. 输入组装 ═══
@@ -68,6 +69,18 @@ await check('buildAutoReviewInput：没有任何素材 → 空串', () => {
   assert.equal(buildAutoReviewInput({ messages: [{ role: 'user', content: '你好' }] }), '');
 });
 
+await check('buildAutoReviewInput：过期的 state 不进评审上下文', () => {
+  const input = buildAutoReviewInput({
+    messages: [{ role: 'assistant', content: '想过一些事' }],
+    selfNotes: [
+      { content: '已过期的旧计划', kind: 'state', expired: true },
+      { content: '还在进行的游戏', kind: 'state', expired: false }
+    ]
+  });
+  assert.ok(!input.includes('已过期的旧计划'), '过期条目不该喂给评审');
+  assert.ok(input.includes('还在进行的游戏'));
+});
+
 // ═══ 3. 解析 ═══
 await check('parseAutoReview：正常 JSON（记忆 + 技能）', () => {
   const r = parseAutoReview(JSON.stringify({
@@ -82,7 +95,7 @@ await check('parseAutoReview：正常 JSON（记忆 + 技能）', () => {
 });
 
 await check('parseAutoReview：剥 markdown 围栏 / 记忆为纯字符串 / 非法输入', () => {
-  const fenced = parseAutoReview('```json\n{"memories":["A","B"],"skill":null}\n```');
+  const fenced = parseAutoReview('```json\n{"memories":["A","B"],"skill":null}\n```', { maxMemories: 2 });
   assert.equal(fenced.memories.length, 2);
   assert.equal(fenced.memories[0].kind, 'state', '纯字符串按 state');
   assert.equal(fenced.skill, null);
@@ -253,6 +266,13 @@ await check('统计：跑过之后 runs/lastRunAt 有值', () => {
   const s = autoLearnStats();
   assert.ok(s.runs > 0, `runs 应 > 0，实际 ${s.runs}`);
   assert.ok(s.lastRunAt > 0);
+});
+
+// ═══ 7. 提示词防污染（2026-10-17）═══
+await check('评审提示词含「不要写」清单，且默认只写 1 条', () => {
+  assert.ok(AUTO_REVIEW_SYSTEM_PROMPT.includes('【不要写】'), '应与关闭蒸馏共用排除清单');
+  assert.ok(AUTO_REVIEW_SYSTEM_PROMPT.includes('打算 / 准备 / 决定'), '应点名"计划类"污染');
+  assert.equal(autoLearnConfig().maxMemories, 1, '默认单次只写 1 条');
 });
 
 console.log(`\n自动学习：通过 ${pass.length}，失败 ${fail.length}`);

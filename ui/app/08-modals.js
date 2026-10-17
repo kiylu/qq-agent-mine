@@ -179,9 +179,20 @@ function openPersonaPicker() {
             <span class="mm-check">${(state.personaTemplates[id]?.text === ($('#cfg-roletext')?.value ?? '')) ? '✓' : ''}</span>
             <span>${esc(p.name)}</span>
             <span class="muted" style="font-size:11px">${p.builtin ? '内置' : '自定义'}</span>
+            ${p.builtin ? '' : `<button class="btn btn-small persona-edit-btn" data-edit-id="${esc(id)}" title="编辑这条人设">编辑</button>`}
           </div>`).join('')}
       </div>`,
     foot: `<button class="btn" id="persona-cancel">取消</button>`
+  });
+  // 自定义人设可原地编辑（内置写在代码里，只读）。先关列表再开编辑器，
+  // 避免两个弹窗叠加时列表还显示旧名字。
+  overlay.querySelectorAll('.persona-edit-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tpl = state.personaTemplates[btn.dataset.editId];
+      closeModelModal(overlay);
+      if (tpl) openPersonaEditor(tpl);
+    });
   });
   overlay.querySelectorAll('.mm-model').forEach((el) => {
     el.addEventListener('click', () => {
@@ -191,7 +202,9 @@ function openPersonaPicker() {
         $('#cfg-roletext').value = tpl.text;
         $('#cfg-customrules').value = tpl.customRules || '';
         const input = $('#cfg-persona-pick');
-        if (input) input.value = tpl.name;
+        // 显式记住"选了哪条模板"——保存时随表单落进 persona.templateId，
+        // 之后判断"当前能不能编辑"就不用再靠文本比对了。
+        if (input) { input.value = tpl.name; input.dataset.templateId = id; }
         // ⚠️ 程序化赋值不触发 input/change 事件 → 自动保存不会启动。
         //    这是"选了人设但改了不生效/切走就丢"的根因之一：用户以为点选
         //    完就保存了，实际上防抖窗口从未开启，切页签的 flush 也无从发起。
@@ -205,54 +218,202 @@ function openPersonaPicker() {
   overlay.querySelector('#persona-cancel').addEventListener('click', () => closeModelModal(overlay));
 }
 
-/** 添加人设：弹窗填写人设名称、角色设定、管理员附加规则。 */
-function openPersonaCreateModal() {
+/**
+ * 人设编辑器：新建或**原地修改**（2026-10-18）。
+ *
+ * 此前只有"添加"：想改一个已有人设，只能再新建一个 —— 模板库里原来那条纹丝不动，
+ * 于是"改完就对不上原本添加的那个人设了"。现在传 tpl 即为编辑（走 PATCH）。
+ * 内置人设只读（写在代码里），要改请「另存为」自定义人设。
+ */
+function openPersonaEditor(tpl = null, { prefill = false, onSaved = null } = {}) {
+  const isEdit = Boolean(tpl && tpl.id && !tpl.builtin);
+  const fill = isEdit || prefill;   // 另存为：预填内容，但仍走新建
+  const seed = tpl || {};
+  // 兜底：调用方没给正文时用页面上当前的角色设定 —— 避免"打开是空白、得从头写"。
+  const seedText = fill ? (String(seed.text ?? '') || String($('#cfg-roletext')?.value ?? '')) : '';
+  const seedRules = fill ? (String(seed.customRules ?? '') || String($('#cfg-customrules')?.value ?? '')) : '';
   const overlay = modelModalShell({
-    head: '添加人设',
+    head: isEdit ? `编辑人设：${esc(seed.name)}` : (prefill ? '另存为新人设' : '添加人设'),
     body: `
       <div class="field" style="flex:1;min-width:0">
         <label>人设名称</label>
-        <input type="text" id="new-persona-name" placeholder="例如：毒舌老哥" />
+        <input type="text" id="new-persona-name" placeholder="例如：毒舌老哥" value="${fill ? esc(seed.name || '') : ''}" />
       </div>
       <div class="field" style="flex:1;min-width:0">
         <label>角色设定</label>
-        <textarea id="new-persona-text" class="persona-role-text" style="min-height:220px" placeholder="人设文本"></textarea>
+        <textarea id="new-persona-text" class="persona-role-text" style="min-height:220px" placeholder="人设文本">${esc(seedText)}</textarea>
       </div>
       <div class="field" style="flex:1;min-width:0">
         <label>管理员附加规则（可选）</label>
-        <textarea id="new-persona-rules" style="min-height:90px" placeholder="可选：追加到系统提示的规则"></textarea>
-      </div>`,
+        <textarea id="new-persona-rules" style="min-height:90px" placeholder="可选：追加到系统提示的规则">${esc(seedRules)}</textarea>
+      </div>
+      ${isEdit ? '<div class="hint">保存后若当前正在用这条人设（角色设定与修改前一致），会自动同步生效。</div>' : ''}
+      ${prefill ? '<div class="hint">会保存成一条<b>新的人设</b>，原来的内置人设不受影响。</div>' : ''}`,
     foot: `<button class="btn" id="persona-add-cancel">取消</button>
-           <button class="btn btn-primary" id="persona-add-apply">确认添加</button>`
+           <button class="btn btn-primary" id="persona-add-apply">${isEdit ? '保存修改' : (prefill ? '另存为新的人设' : '确认添加')}</button>`
   });
   overlay.querySelector('#persona-add-cancel').addEventListener('click', () => closeModelModal(overlay));
-  overlay.querySelector('#persona-add-apply').addEventListener('click', async () => {
+  const applyBtn = overlay.querySelector('#persona-add-apply');
+  applyBtn.addEventListener('click', async () => {
     const name = overlay.querySelector('#new-persona-name').value.trim();
     const text = overlay.querySelector('#new-persona-text').value.trim();
     const customRules = overlay.querySelector('#new-persona-rules').value.trim();
     if (!name) { $('#persona-pick-hint').textContent = '人设名称不能为空'; return; }
     if (!text) { $('#persona-pick-hint').textContent = '角色设定不能为空'; return; }
+    applyBtn.disabled = true;
     try {
-      await api('/api/persona-templates', {
-        method: 'POST',
-        body: JSON.stringify({ name, text, customRules })
-      });
+      let synced = false;
+      let savedId = '';
+      if (isEdit) {
+        const r = await api(`/api/persona-templates/${encodeURIComponent(tpl.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name, text, customRules })
+        });
+        synced = r?.synced === true;
+        savedId = tpl.id;
+      } else {
+        const r = await api('/api/persona-templates', {
+          method: 'POST',
+          body: JSON.stringify({ name, text, customRules })
+        });
+        savedId = r?.id || '';
+      }
       closeModelModal(overlay);
-      $('#cfg-roletext').value = text;
-      $('#cfg-customrules').value = customRules;
-      const input = $('#cfg-persona-pick');
-      if (input) input.value = name;
-      // 同 openPersonaPicker：程序化赋值不触发 input 事件，自动保存不会启动 ——
-      // 主动派发一次，否则"添加完人设切走页签"就丢（保存从未发起）。
-      $('#cfg-roletext')?.dispatchEvent(new Event('input', { bubbles: true }));
+      // 分会话调用方（openPerChatPersonaModal）自己更新自己的输入框 —— 它不在
+      // 设置页表单里，全局回填那套对它无效。
+      if (typeof onSaved === 'function') onSaved({ id: savedId, name, text, customRules });
+      // 只有"当前用的就是这条人设"时才回填表单，避免把别人的设定覆盖掉。
+      if (!isEdit || synced) {
+        $('#cfg-roletext').value = text;
+        $('#cfg-customrules').value = customRules;
+        const input = $('#cfg-persona-pick');
+        if (input) {
+          input.value = name;
+          // 新建 / 另存为后立刻把"当前人设"指向这一条 —— 否则刚建完就又不能编辑了。
+          if (savedId) {
+            input.dataset.templateId = savedId;
+            // 同步内存里的 config：紧接着的 loadSettings 会重新渲染表单，
+            // 若自动保存还没落盘，重渲染就会用旧 templateId 把这里刚设的值冲掉。
+            if (state.config?.persona) state.config.persona.templateId = savedId;
+          }
+        }
+        // 同 openPersonaPicker：程序化赋值不触发 input 事件，自动保存不会启动 ——
+        // 主动派发一次，否则"改完人设切走页签"就丢（保存从未发起）。
+        $('#cfg-roletext')?.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       await loadSettings();
       // loadSettings 会重渲染整个表单；重渲染用的是 state.config（含刚派发
       // 事件触发的自动保存最终值）。自动保存在途时渲染守卫会拦下并补绘，不会丢。
-      $('#persona-pick-hint').textContent = `人设「${name}」已添加并填入表单，自动保存稍后生效（也可切走页签前确认）。`;
+      $('#persona-pick-hint').textContent = isEdit
+        ? `人设「${name}」已更新。`
+        : `人设「${name}」已保存，并设为当前人设。`;
     } catch (e) {
-      $('#persona-pick-hint').textContent = `添加失败：${e.message}`;
+      $('#persona-pick-hint').textContent = `${isEdit ? '保存' : '添加'}失败：${e.message}`;
+    } finally {
+      applyBtn.disabled = false;
     }
   });
+}
+
+/** 兼容旧调用：只新建。 */
+function openPersonaCreateModal() {
+  openPersonaEditor(null);
+}
+
+/**
+ * 系统提示词 · 逐段编辑（2026-10-18）。
+ *
+ * 这些规则原先只能改代码。左列选段，右侧改**生效文本**；留空保存 = 恢复内置默认。
+ * 安全规则与工具协议由后端标记 locked，前端只读显示（不提供保存按钮）。
+ * 改动在**下一个会话**生效 —— 系统提示词在会话内逐字节复用（缓存前缀），
+ * 所以不会打断当前会话，也不会让当前轮命中率掉下来。
+ */
+async function openPromptSectionsModal() {
+  let data = null;
+  try { data = await api('/api/prompt-sections'); } catch { data = null; }
+  if (!data || !Array.isArray(data.sections) || !data.sections.length) {
+    alert('读取系统提示词失败（后端未提供 /api/prompt-sections）');
+    return;
+  }
+  let sections = data.sections;
+  let activeId = (sections.find((s) => !s.locked) || sections[0]).id;
+
+  const overlay = modelModalShell({
+    head: '系统提示词 · 逐段编辑',
+    body: `
+      <div class="model-modal-left" id="ps-list" style="width:220px;flex:none">
+        ${sections.map((s) => `
+          <div class="mm-model" data-id="${esc(s.id)}">
+            <span class="mm-check" data-badge="${esc(s.id)}">${s.locked ? '🔒' : (s.overridden ? '●' : '')}</span>
+            <span>${esc(s.title)}</span>
+          </div>`).join('')}
+      </div>
+      <div class="model-modal-right" id="ps-editor" style="flex:1"></div>`,
+    foot: `<button class="btn" id="ps-close">关闭</button>`
+  });
+
+  const listEl = overlay.querySelector('#ps-list');
+  const editorEl = overlay.querySelector('#ps-editor');
+
+  function renderEditor() {
+    const sec = sections.find((s) => s.id === activeId) || sections[0];
+    editorEl.innerHTML = `
+      <div class="field">
+        <label>${esc(sec.title)}${sec.locked ? '（锁定，不可改）' : ''}</label>
+        <textarea id="ps-text" class="persona-role-text" style="min-height:300px" ${sec.locked ? 'readonly' : ''}>${esc(sec.effectiveText)}</textarea>
+      </div>
+      <div class="hint">
+        ${sec.locked
+          ? '这一段是锁定项（安全规则 / 工具协议），不允许覆盖。'
+          : '留空并保存 = 恢复内置默认。改动在<b>下一个会话</b>生效；当前会话沿用已发出的提示词，不会打断缓存。'}
+      </div>
+      ${sec.locked ? '' : `
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+          <button class="btn btn-primary btn-small" id="ps-save">保存这一段</button>
+          <button class="btn btn-small" id="ps-reset">恢复默认</button>
+          <span class="muted" id="ps-status" style="font-size:12px"></span>
+        </div>`}`;
+
+    const saveBtn = editorEl.querySelector('#ps-save');
+    const resetBtn = editorEl.querySelector('#ps-reset');
+    const statusEl = editorEl.querySelector('#ps-status');
+    const save = async (text) => {
+      try {
+        await api('/api/prompt-sections', {
+          method: 'POST',
+          body: JSON.stringify({ id: sec.id, text })
+        });
+        const fresh = await api('/api/prompt-sections');
+        sections = fresh.sections || sections;
+        renderList();
+        renderEditor();
+        editorEl.querySelector('#ps-status').textContent = text ? '已保存（下个会话生效）' : '已恢复默认';
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `保存失败：${e.message}`;
+      }
+    };
+    saveBtn?.addEventListener('click', () => save(editorEl.querySelector('#ps-text').value.trim()));
+    resetBtn?.addEventListener('click', () => save(''));
+  }
+
+  function renderList() {
+    listEl.innerHTML = sections.map((s) => `
+      <div class="mm-model${s.id === activeId ? ' active' : ''}" data-id="${esc(s.id)}">
+        <span class="mm-check">${s.locked ? '🔒' : (s.overridden ? '●' : '')}</span>
+        <span>${esc(s.title)}</span>
+      </div>`).join('');
+    listEl.querySelectorAll('.mm-model').forEach((el) => {
+      el.addEventListener('click', () => {
+        activeId = el.dataset.id;
+        renderList();
+        renderEditor();
+      });
+    });
+  }
+
+  renderList();
+  renderEditor();
+  overlay.querySelector('#ps-close').addEventListener('click', () => closeModelModal(overlay));
 }
 
 /**
@@ -1560,13 +1721,18 @@ async function saveConfig({ quiet = false } = {}) {
   }
 
   if (sec === 'persona') {
+    const pickEl = el('#cfg-persona-pick');
     patch.persona = {
       botName: val('#cfg-botname', c.persona.botName).trim() || '小鲸鱼',
       selfNickname: val('#cfg-selfnick', c.persona.selfNickname || '').trim(),
       participation: val('#cfg-participation', c.persona.participation),
       roleText: val('#cfg-roletext', c.persona.roleText || ''),
       customRules: val('#cfg-customrules', c.persona.customRules || ''),
-      systemPromptOverride: val('#cfg-sysprompt', c.persona.systemPromptOverride || '')
+      systemPromptOverride: val('#cfg-sysprompt', c.persona.systemPromptOverride || ''),
+      // 当前人设来源：选模板时写进 dataset，这里随表单落盘。
+      // 有它才能稳定判断"现在用的是哪条人设"（编辑/删除按钮依赖），
+      // 不再靠 roleText 文本比对 —— 用户改一个字就匹配不到。
+      templateId: pickEl ? String(pickEl.dataset.templateId || '') : String(c.persona.templateId || '')
     };
     // 统一人设开关：编辑器随开关二选一在场，读不到的保持旧值。
     patch.personaUnified = chk('#cfg-persona-unified', c.personaUnified !== false);

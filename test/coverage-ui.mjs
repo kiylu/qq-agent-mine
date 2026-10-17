@@ -254,7 +254,7 @@ await c.check('二级菜单是通用实现（两组共用一套逻辑，不是�
   assert.ok(!/function initExtSubmenu/.test(appJs), '旧的单组实现 initExtSubmenu 应该已被泛化替换');
   assert.ok(/initSubmenu\('archive-tab', 'archive-submenu', \['chats', 'memory'\]\)/.test(appJs),
     '没有用 initSubmenu 初始化「记录」组');
-  assert.ok(/initSubmenu\('ext-tab', 'ext-submenu', \['skills', 'plugins'\]\)/.test(appJs),
+  assert.ok(/initSubmenu\('ext-tab', 'ext-submenu', \['skills', 'plugins'(, 'autolearn')?\]\)/.test(appJs),
     '没有用 initSubmenu 初始化「扩展」组');
   // 两组互斥：展开一组要关掉另一组，否则会互相盖住
   assert.ok(/for \(const other of submenus\) if \(other !== api\) other\.close\(\)/.test(appJs),

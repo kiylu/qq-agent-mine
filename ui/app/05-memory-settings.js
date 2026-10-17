@@ -169,10 +169,28 @@ async function loadMemoryDetail(chatKey) {
     } else {
       consolidateStatusHtml = `<span id="mem-consolidate-status" class="muted"></span>`;
     }
-    // 自身状态（②P2）：机器人自己跨会话的私有状态，随"会话关闭蒸馏"或 remember_self 写入。
+    // 自身状态（②P2 + L1/L3）：机器人自己跨轮保留的事，来源是会话关闭蒸馏、
+    // 续接期后台评审、remember_self 工具。过期的 state 已不再注入（灰色显示），
+    // 但盘里保留 —— 可逐条删或整批清空（都进回收站，可恢复）。
     const selfNotes = Array.isArray(mem.selfNotes) ? mem.selfNotes : [];
+    const selfLive = selfNotes.filter((e) => !e.expired).length;
     const selfHtml = selfNotes.length
-      ? `<details class="collapsible mem-fold"><summary><span class="mem-who">🪞 自身状态（${selfNotes.length} 条）</span></summary><div class="coll-body">${esc(selfNotes.map((e) => `- ${e.content}`).join('\n'))}</div></details>`
+      ? `<details class="collapsible mem-fold" id="mem-self-fold">
+          <summary>
+            <span class="mem-who">🪞 自身状态（生效 ${selfLive} / 共 ${selfNotes.length} 条）</span>
+            <span class="muted">「规则」长期有效；「状态」超过 72 小时不再注入</span>
+          </summary>
+          <div class="coll-body">
+            ${selfNotes.map((e, i) => `
+              <div style="display:flex;gap:8px;align-items:flex-start;padding:3px 0${e.expired ? ';opacity:.45' : ''}">
+                <span class="uc-tag" style="flex:none">${e.kind === 'rule' ? '规则' : '状态'}</span>
+                <div style="flex:1">${esc(e.content)}</div>
+                <span class="muted" style="flex:none;font-size:11px">${e.expired ? '已过期 · ' : ''}${e.createdAt ? fmtTime(e.createdAt) : ''}</span>
+                <button class="btn btn-small mem-del-self" data-idx="${i}">删除</button>
+              </div>`).join('')}
+            <div style="margin-top:8px"><button class="btn btn-small" id="mem-clear-self">清空自身状态</button></div>
+          </div>
+        </details>`
       : '';
     // 自身记忆回收站（L4b）：自身状态超出上限时按权重淘汰的条目，可恢复 —— 误删保险。
     const evicted = Array.isArray(mem.evictedSelf) ? mem.evictedSelf : [];
@@ -231,6 +249,33 @@ async function loadMemoryDetail(chatKey) {
         }
       });
     }
+    // 自身状态：逐条删除 / 整批清空（都进回收站，删错可恢复）
+    $$('.mem-del-self', detail).forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const item = selfNotes[Number(btn.dataset.idx)];
+        if (!item) return;
+        btn.disabled = true;
+        try {
+          await api(`/api/memory-files/${encodeURIComponent(chatKey.replace(':', '_'))}/self/remove`, {
+            method: 'DELETE',
+            body: JSON.stringify({ content: item.content })
+          });
+          await loadMemoryDetail(chatKey);
+        } catch (err) {
+          btn.disabled = false;
+          alert(`删除失败：${err.message}`);
+        }
+      });
+    });
+    $('#mem-clear-self')?.addEventListener('click', async () => {
+      if (!(await uiConfirm('清空这个会话的全部自身状态？\n\n会整批移入回收站，之后仍可逐条恢复。'))) return;
+      try {
+        await api(`/api/memory-files/${encodeURIComponent(chatKey.replace(':', '_'))}/self`, { method: 'DELETE' });
+        await loadMemoryDetail(chatKey);
+      } catch (err) {
+        alert(`清空失败：${err.message}`);
+      }
+    });
     // 自身记忆回收站：恢复 / 清空（L4b）
     $$('.mem-restore-self', detail).forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -601,7 +646,14 @@ async function loadSettings() {
   state.skills = skillsData.skills || [];
   state.skillsSummary = skillsData.summary || {};
   state.uninstalledSkills = skillsData.uninstalled || [];
-  for (const t of tplData.templates || []) state.personaTemplates[t.id] = { name: t.name, text: t.text, builtin: !!t.builtin };
+  // 模板缓存：必须带上 id 与 customRules。
+  // 少了 id → openPersonaEditor 判断不出"这是编辑"，只能走新建（表现为"点了编辑只能另存为"）；
+  // 少了 customRules → 编辑弹窗里附加规则永远是空的。
+  for (const t of tplData.templates || []) {
+    state.personaTemplates[t.id] = {
+      id: t.id, name: t.name, text: t.text, customRules: t.customRules || '', builtin: !!t.builtin
+    };
+  }
   // 提示词预览与配置并行拉取；渲染时可能还没到（先显示占位，到达后原地替换）
   refreshPromptPreview(cfg);
   renderSettings();
@@ -900,18 +952,27 @@ function openBatchPriceModal() {
 }
 
 function renderPersonaPicker(c) {
-  const currentId = Object.entries(state.personaTemplates || {}).find(([, p]) => p.text === (c.persona?.roleText || ''))?.[0] || '';
+  // 优先用显式记录的人设来源（persona.templateId）；老数据没有该字段时才退回文本比对。
+  const legacyId = Object.entries(state.personaTemplates || {}).find(([, p]) => p.text === (c.persona?.roleText || ''))?.[0] || '';
+  const currentId = c.persona?.templateId || legacyId;
   const currentName = state.personaTemplates[currentId]?.name || '';
+  const isCustom = currentId.startsWith('custom_');
+  const hint = isCustom
+    ? '自定义人设 —— 点「编辑人设」可原地修改。'
+    : (currentId
+      ? '内置人设只读 —— 点「编辑人设」会另存为一份可改的副本。'
+      : '当前角色设定是手写的，未对应任何模板；点「编辑人设」可存成模板。');
   return `
     <div class="field-row" style="align-items:flex-end">
       <div class="field">
         <label>选择人设</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input type="text" id="cfg-persona-pick" class="inp persona-pick" readonly placeholder="点击选择人设" value="${esc(currentName)}" style="flex:1;min-width:160px;cursor:pointer" />
+          <input type="text" id="cfg-persona-pick" class="inp persona-pick" readonly placeholder="点击选择人设" value="${esc(currentName)}" data-template-id="${esc(currentId)}" style="flex:1;min-width:160px;cursor:pointer" />
+          <button class="btn btn-small" id="edit-persona-btn">编辑人设</button>
           <button class="btn btn-small" id="new-persona-btn">＋ 添加人设</button>
           <button class="btn btn-small btn-danger hidden" id="del-persona-btn">删除当前自定义人设</button>
         </div>
-        <span id="persona-pick-hint" class="muted" style="font-size:12px"></span>
+        <span id="persona-pick-hint" class="muted" style="font-size:12px">${hint}</span>
       </div>
     </div>`;
 }
