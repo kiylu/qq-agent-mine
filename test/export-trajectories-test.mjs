@@ -13,7 +13,7 @@ import path from 'node:path';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-agent-traj-'));
 const {
-  redactText, flattenContent, archiveToSamples, loadArchives, exportTrajectories
+  redactText, flattenContent, archiveToSamples, loadArchives, exportTrajectories, extractSaidText
 } = await import('../src/trajectory-export.js');
 
 const pass = [], fail = [];
@@ -153,6 +153,36 @@ await check('exportTrajectories：写出 JSONL 且行数正确', () => {
 
 await check('exportTrajectories：缺参数抛错', () => {
   assert.throws(() => exportTrajectories({}), /必填/);
+});
+
+// ── 2026-10-18：机器人发言在工具参数里，不在 content ──────────────────────
+await check('archiveToSamples：从 send_message 工具调用里取真实发言', () => {
+  const arch = {
+    chatKey: 'group:1',
+    systemPrompt: 'sys',
+    messages: [
+      { role: 'user', content: '在吗' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          function: { name: 'send_message', arguments: JSON.stringify({ messages: ['在的', '叫我干嘛'] }) }
+        }]
+      }
+    ]
+  };
+  const [s] = archiveToSamples(arch, { format: 'openai' });
+  assert.ok(s, '应产出一条样本');
+  const said = s.messages.filter((m) => m.role === 'assistant').map((m) => m.content).join('|');
+  assert.equal(said, '在的\n叫我干嘛', '分条发送应拼回一条');
+});
+
+await check('extractSaidText：字符串参数 / send_to / 非法 JSON 容错', () => {
+  assert.equal(extractSaidText([{ function: { name: 'send_message', arguments: { messages: '单个' } } }]), '单个');
+  assert.equal(extractSaidText([{ function: { name: 'send_to', arguments: JSON.stringify({ messages: ['a', 'b'] }) } }]), 'a\nb');
+  assert.equal(extractSaidText([{ function: { name: 'send_message', arguments: 'not json' } }]), '');
+  assert.equal(extractSaidText([{ function: { name: 'web_search', arguments: { q: 'x' } } }]), '', '别的工具不算发言');
+  assert.equal(extractSaidText(null), '');
 });
 
 console.log(`\n轨迹导出：通过 ${pass.length}，失败 ${fail.length}`);

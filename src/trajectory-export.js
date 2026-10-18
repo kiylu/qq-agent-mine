@@ -28,6 +28,39 @@ export function redactText(text) {
     .replace(NUM_RE, '<num>');
 }
 
+/**
+ * 从工具调用里取出机器人**实际说出口的话**。
+ *
+ * 为什么需要：本项目的设定是"所有行为都通过工具完成"，机器人发言走 `send_message`
+ * （要发到别的会话则 `send_to`），文本在 `tool_calls[].function.arguments.messages` 里，
+ * 而 `assistant.content` 通常是空的。只读 content 会导出成"群友说了一堆、机器人一个字没说"，
+ * 这种样本没有训练价值。
+ *
+ * 分条发送的（messages 是数组）用换行拼回去，保留"一句话一条"的节奏。
+ */
+export function extractSaidText(toolCalls) {
+  if (!Array.isArray(toolCalls)) return '';
+  const out = [];
+  for (const c of toolCalls) {
+    const name = c?.function?.name;
+    if (name !== 'send_message' && name !== 'send_to') continue;
+    let args = c?.function?.arguments;
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); } catch { continue; }
+    }
+    const raw = args?.messages ?? args?.message ?? args?.text;
+    if (Array.isArray(raw)) {
+      for (const x of raw) {
+        const t = String(x ?? '').trim();
+        if (t) out.push(t);
+      }
+    } else if (typeof raw === 'string' && raw.trim()) {
+      out.push(raw.trim());
+    }
+  }
+  return out.join('\n');
+}
+
 /** content 可能是字符串，也可能是 parts 数组（文本 + 图片/视频）。 */
 export function flattenContent(content) {
   if (typeof content === 'string') return content.trim();
@@ -79,9 +112,12 @@ export function archiveToSamples(archive, {
     }
     if (role === 'assistant') {
       const t = flattenContent(m.content);
-      if (t) turn.push({ role: 'assistant', content: t });
-      // 只调工具、没有正文的条目默认**跳过** —— 训练样本里没有可学的话。
-      else if (includeTools && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      if (t) { turn.push({ role: 'assistant', content: t }); continue; }
+      // content 为空 → 从工具调用里捞真实发言（本项目发言走 send_message）。
+      const said = extractSaidText(m.tool_calls);
+      if (said) { turn.push({ role: 'assistant', content: said }); continue; }
+      // 只调工具、确实没说话（如 web_search / 收藏表情）—— 训练样本里没有可学的话。
+      if (includeTools && Array.isArray(m.tool_calls) && m.tool_calls.length) {
         const names = m.tool_calls.map((c) => c?.function?.name).filter(Boolean).join(', ');
         turn.push({ role: 'assistant', content: `[工具调用] ${names}` });
       }

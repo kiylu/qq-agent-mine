@@ -33,6 +33,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { detectDialect } from './thinking.js';
+import { extractSaidText } from './trajectory-export.js';
 
 const CONV_DIR = path.join(DATA_DIR, 'conversations');
 // 关闭的会话归档到这里（②P3：buffer 归档回溯）。供 UI/排障回看"上一个会话长什么样"。
@@ -458,8 +459,18 @@ export function collectAssistantText(messages, { maxChars = 12000, reasonings = 
       : Array.isArray(c)
         ? c.filter((p) => p && typeof p.text === 'string').map((p) => p.text).join('')
         : '';
-    // reasoning 在前、正文在后：思考是主体，正文常只是它决定"说出口"的部分。
-    const parts = [String(r ?? '').trim(), String(body ?? '').trim()].filter(Boolean);
+    // reasoning 在前、**实际说出口的话**次之、正文在后。
+    //
+    // ⚠️ 必须取 tool_calls 里的发言（2026-10-18）：本项目"所有行为都通过工具完成"，
+    //    机器人说话走 `send_message`，文本在参数里，而 `assistant.content` 实测 **98% 为空**。
+    //    只读 content 会让蒸馏 / 后台评审拿到近乎空的输入 —— 线上表现就是
+    //    连续十几次"蒸馏模型认为这段对话没有值得跨轮记住的内容"、自学习 0 产出。
+    const said = extractSaidText(m.tool_calls);
+    const parts = [
+      r ? `[思考] ${String(r).trim()}` : '',
+      said ? `[说出口] ${said}` : '',
+      body ? `[正文] ${String(body).trim()}` : ''
+    ].filter(Boolean);
     if (!parts.length) continue;
     const t = parts.join('\n');
     chunks.push(t);
@@ -518,7 +529,8 @@ export const DISTILL_NOT_RECORD = [
  */
 export const DISTILL_SYSTEM_PROMPT = [
   '你在帮一个群聊 AI 机器人做"会话关闭前的记忆归档"。',
-  '下面会给你这个机器人在刚刚结束的一段群聊会话中**没有发送到群里**的内部思考与正文。',
+  '下面会给你这个机器人在刚刚结束的一段群聊会话中的**内部思考**（标了 [思考]）',
+  '和**它实际发到群里的话**（标了 [说出口]）。',
   '请从中提炼出**下次开口必须用得上**的内容，分两类：',
   '',
   '【state】跨轮必须接得上的事实（会过期）：',
@@ -633,7 +645,7 @@ export async function distillBuffer({
     messages: [
       // signals=false 时退回旧口径（只记状态），供 continuation.distillSignals 关闭时使用。
       { role: 'system', content: signals ? DISTILL_SYSTEM_PROMPT : DISTILL_SYSTEM_PROMPT_BASIC },
-      { role: 'user', content: `以下是这段会话的内部思考：\n\n${cot}` }
+      { role: 'user', content: `以下是这段会话里你的思考与实际发言：\n\n${cot}` }
     ],
     maxTokens: 600,
     temperature: 0.2

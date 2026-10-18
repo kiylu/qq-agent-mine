@@ -95,19 +95,22 @@ await check('formatSelfForPrompt：有内容渲染【自身状态】，空返回
 });
 
 // ═══ 3. collectAssistantText ═══
-await check('collectAssistantText：只取 assistant 正文，跳过工具参数与 user', () => {
+await check('collectAssistantText：思考 + 实际发言 + 正文，跳过 user / tool 结果', () => {
   const msgs = [
     { role: 'user', content: '你好' },
     { role: 'assistant', content: '我在想谜底是苹果' },
-    { role: 'assistant', content: '', tool_calls: [{ function: { name: 'send_message', arguments: '{"text":"hi"}' } }] },
+    // 本项目发言走 send_message，content 为空 —— 必须能从工具参数里取到。
+    { role: 'assistant', content: '', tool_calls: [{ function: { name: 'send_message', arguments: '{"messages":["在的"]}' } }] },
     { role: 'tool', content: '发送成功' },
     { role: 'assistant', content: [{ type: 'text', text: '补充一句' }] }
   ];
   const t = collectAssistantText(msgs);
   assert.ok(t.includes('我在想谜底是苹果'), '应含第一条思考');
   assert.ok(t.includes('补充一句'), '应含数组形态的文本');
+  assert.ok(t.includes('在的'), '应含实际说出口的话（在 tool_calls 里）');
   assert.ok(!t.includes('send_message'), '不应含工具名');
   assert.ok(!t.includes('发送成功'), '不应含 tool 结果');
+  assert.ok(!t.includes('你好'), '不应含 user 消息');
   assert.ok(!t.includes('你好'), '不应含 user 内容');
 });
 
