@@ -81,6 +81,30 @@ function describeCause(error, depth = 0) {
     || parts.join(' ← ') || '未知原因';
 }
 
+/**
+ * 合并转发的资源 ID：SnowLuma 发给客户端的是 forward 段的 data.id。
+ * 兼容 res_id / forward_id / data_id 这些历史字段名。
+ */
+export function forwardIdFromData(d) {
+  const raw = d?.id ?? d?.res_id ?? d?.forward_id ?? d?.data_id;
+  if (raw == null || String(raw).trim() === '') return null;
+  return String(raw);
+}
+
+/**
+ * 从一条 OneBot 消息事件里取第一个合并转发段的资源 ID。
+ * 只接受结构化消息段；字符串 CQ 码不是这里的目标（调用方拿不到稳定 res_id）。
+ */
+export function forwardIdFromMessage(message) {
+  if (!Array.isArray(message)) return null;
+  for (const seg of message) {
+    if (!seg || typeof seg !== 'object' || seg.type !== 'forward') continue;
+    const id = forwardIdFromData(seg.data);
+    if (id) return id;
+  }
+  return null;
+}
+
 export class OneBotClient {
   constructor({ wsUrl, httpUrl, accessToken, httpToken, onEvent }) {
     this.wsUrl = String(wsUrl || 'ws://127.0.0.1:3001');
@@ -265,8 +289,65 @@ export class OneBotClient {
     this.#setStatus(false);
   }
 
-  /** OneBot HTTP API（发送与查询都走这里）。 */
-  async call(action, params = {}, timeoutMs = null) {
+  /**
+   * 把负数 message_id 的合并转发请求修复为真实资源 ID。
+   *
+   * SnowLuma v1.14.19 的 get_forward_msg 只对正数 message_id 查原始消息；
+   * 负数 ID 会被直接当作 forward res_id，QQ 返回 payload is empty。QQ 的
+   * message_id 是 signed int32，负数完全合法，所以不能只在应用层拒绝它们。
+   *
+   * 优先用调用方手里的入站事件（forward 段已有 data.id，零额外请求）；
+   * 没有事件时用 get_msg(message_id) 找回原消息，再读 forward 段。
+   * 返回 null 表示没有可用资源 ID，调用方继续走原请求。
+   */
+  async #forwardResIdForNegativeMessage(messageId, sourceMessage = null) {
+    const mid = Number(messageId);
+    if (!Number.isSafeInteger(mid) || mid >= 0) return null;
+
+    const fromSource = forwardIdFromMessage(sourceMessage);
+    if (fromSource) return fromSource;
+
+    try {
+      const event = await this.call('get_msg', { message_id: mid });
+      return forwardIdFromMessage(event?.message);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 负数 message_id 的合并转发请求：先按真实 res_id 发。
+   *
+   * 为什么不直接发 message_id 再等失败：SnowLuma 的旧版本会把负数直接当
+   * res_id，QQ 侧还会做一次无效下载；而且自动展开路径本来就握着 forward
+   * 段，先解析更省一次失败往返。解析不到时仍回退到原行为。
+   */
+  async #callForwardByNegativeMessageId(params, timeoutMs, options) {
+    const resId = await this.#forwardResIdForNegativeMessage(params?.message_id, options.sourceMessage);
+    if (!resId) return null;
+    return this.call('get_forward_msg', { id: resId }, timeoutMs);
+  }
+
+  /**
+   * OneBot HTTP API（发送与查询都走这里）。
+   *
+   * options.sourceMessage 仅用于 get_forward_msg：调用方若手里已有入站事件，
+   * 可以直接提供 message 数组，避免负数 ID 再走一次 get_msg 网络请求。
+   */
+  async call(action, params = {}, timeoutMs = null, options = {}) {
+    const negativeForward = action === 'get_forward_msg' && !params?.id
+      && Number.isSafeInteger(Number(params?.message_id)) && Number(params?.message_id) < 0;
+    // SnowLuma v1.14.19：负数 message_id 不会被解析成 forward res_id。
+    // 在发请求前优先解析；解析失败时继续走原请求，保持错误信息不变。
+    if (negativeForward) {
+      const forward = await this.#callForwardByNegativeMessageId(params, timeoutMs, options).catch((error) => {
+        // 解析/重试失败不应掩盖原始 message_id 请求的真实错误。
+        if (!/get_msg|get_forward_msg/.test(String(error?.message || ''))) throw error;
+        return null;
+      });
+      if (forward) return forward;
+    }
+
     // ── 超时按 action 分档（这里修过一个真实故障）──────────────────────────
     // 原来一律 15 秒。查询类够用，但**发送类不够**：图片/视频以 base64 或大 body
     // 发出去时，协议端要走完「接收 body → 解码 → 上传腾讯服务器 → 返回」，
@@ -402,12 +483,6 @@ export class OneBotClient {
 }
 
 // ── 入站事件 → 文本（移植自原版 segmentsToText） ─────────────────────────
-
-export function forwardIdFromData(d) {
-  const raw = d?.id ?? d?.res_id ?? d?.forward_id ?? d?.data_id;
-  if (raw == null || String(raw).trim() === '') return null;
-  return String(raw);
-}
 
 /**
  * 把 OneBot 消息段数组转成 AI 可读的纯文本。

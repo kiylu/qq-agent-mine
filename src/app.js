@@ -875,7 +875,12 @@ export function createApp({ log = console.log } = {}) {
     // 展开失败时占位符留在存档里，模型可用 read_forward 工具稍后重试。
     if (segments && (text.includes('[合并转发') || text.includes('[转发消息')) && event.message_id != null) {
       try {
-        const r = await onebot.call('get_forward_msg', { message_id: Number(event.message_id) });
+        const r = await onebot.call(
+          'get_forward_msg',
+          { message_id: Number(event.message_id) },
+          null,
+          { sourceMessage: segments }
+        );
         const nodes = Array.isArray(r?.messages) ? r.messages : (Array.isArray(r?.data?.messages) ? r.data.messages : []);
         const ex = await expandForwardNodes(nodes);
         if (ex && ex.text) {

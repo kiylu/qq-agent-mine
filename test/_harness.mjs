@@ -170,12 +170,30 @@ export function createMockOneBotHttp() {
       { user_id: 111, nickname: '张三', card: '张三' },
       { user_id: 113, nickname: '王五', card: '' }
     ]);
-    if (action === 'get_msg') return reply({ sender: { user_id: 9101, card: '被引用者', nickname: '被引用者' }, message: [{ type: 'text', data: { text: '被引用的原话' } }] });
-    if (action === 'get_forward_msg') {
+    if (action === 'get_msg') {
+      if (body.message_id === -1399738219) {
+        return reply({
+          sender: { user_id: 1003, card: '负数转发者', nickname: '负数转发者' },
+          message: [{ type: 'forward', data: { id: 'forward-neg-1' } }]
+        });
+      }
+      return reply({ sender: { user_id: 9101, card: '被引用者', nickname: '被引用者' }, message: [{ type: 'text', data: { text: '被引用的原话' } }] });
+    }
+    if (action === 'get_forward_msg' && !body.id && [9300, 9400].includes(Number(body.message_id))) {
       return reply({
         messages: [
           { user_id: 1001, time: 1000, message_id: 9001, sender: { user_id: 1001, nickname: '转发者A', card: '' }, message: [{ type: 'text', data: { text: '第一段转发内容' } }] },
           { user_id: 1002, time: 1001, message_id: 9002, sender: { user_id: 1002, nickname: '转发者B', card: '' }, message: [{ type: 'image', data: { url: `http://127.0.0.1:${server.address()?.port}/img.png`, summary: '[图片]', file: 'fwd.png' } }] }
+        ]
+      });
+    }
+    if (action === 'get_forward_msg' && !body.id) {
+      return reply({ status: 'failed', retcode: 100, wording: 'download forward message payload is empty' });
+    }
+    if (action === 'get_forward_msg') {
+      return reply({
+        messages: [
+          { user_id: 1003, time: 1002, message_id: 9003, sender: { user_id: 1003, nickname: '负数转发者', card: '' }, message: [{ type: 'text', data: { text: '负数 ID 的转发内容' } }] }
         ]
       });
     }

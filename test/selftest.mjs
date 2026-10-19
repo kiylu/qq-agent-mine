@@ -63,13 +63,31 @@ function createMockOneBotHttp() {
     if (action === 'get_group_member_info') return reply({ card: `名片${body.user_id}`, nickname: `昵称${body.user_id}` });
     if (action === 'get_group_list') return reply([{ group_id: 456, group_name: '审计群456' }, { group_id: 789, group_name: '备用群789' }]);
     if (action === 'get_friend_list') return reply([{ user_id: 777, nickname: '好友777', remark: '老友' }]);
-    if (action === 'get_msg') return reply({ sender: { card: '被引用者', nickname: '被引用者' }, message: [{ type: 'text', data: { text: '被引用的原话' } }] });
+    if (action === 'get_msg') {
+      if (body.message_id === -1399738219) {
+        return reply({
+          sender: { card: '负数转发者', nickname: '负数转发者' },
+          message: [{ type: 'forward', data: { id: 'forward-neg-1' } }]
+        });
+      }
+      return reply({ sender: { card: '被引用者', nickname: '被引用者' }, message: [{ type: 'text', data: { text: '被引用的原话' } }] });
+    }
     // 合并转发：按消息 id 返回两段记录（一段文字、一段带图）——测展开链路
-    if (action === 'get_forward_msg') {
+    if (action === 'get_forward_msg' && !body.id && [9300, 9400].includes(Number(body.message_id))) {
       return reply({
         messages: [
           { user_id: 1001, time: 1000, message_id: 9001, sender: { user_id: 1001, nickname: '转发者A', card: '' }, message: [{ type: 'text', data: { text: '第一段转发内容，谁懂' } }] },
           { user_id: 1002, time: 1001, message_id: 9002, sender: { user_id: 1002, nickname: '转发者B', card: '' }, message: [{ type: 'image', data: { url: `http://127.0.0.1:${PORTS.onebotHttp}/img.png`, summary: '[图片]', file: 'fwd.png' } }] }
+        ]
+      });
+    }
+    if (action === 'get_forward_msg' && !body.id) {
+      return reply({ status: 'failed', retcode: 100, wording: 'download forward message payload is empty' });
+    }
+    if (action === 'get_forward_msg') {
+      return reply({
+        messages: [
+          { user_id: 1003, time: 1002, message_id: 9003, sender: { user_id: 1003, nickname: '负数转发者', card: '' }, message: [{ type: 'text', data: { text: '负数 ID 的转发内容' } }] }
         ]
       });
     }
@@ -1449,7 +1467,32 @@ refs:
     pass('read_forward 工具：按需展开 + 写回存档 + 二次读缓存 + 错误提示');
   }
 
-  // ── 场景 38：发送去重安全语义（回退防线，2026-09-13 二次实修）──
+  // ── 场景 38：负数 message_id 的合并转发（SnowLuma 兼容回退）──
+  {
+    // 自动展开：事件里已有 forward.data.id，不需要额外 get_msg。
+    const negMid = -1399738219;
+    const source = [{ type: 'forward', data: { id: 'forward-neg-1' } }];
+    const expanded = await app.onebot.call(
+      'get_forward_msg',
+      { message_id: negMid },
+      null,
+      { sourceMessage: source }
+    );
+    assert.ok(Array.isArray(expanded?.messages) && expanded.messages.length > 0, '负数 ID 应通过真实 res_id 展开');
+    assert.ok(String(expanded.messages[0].message?.[0]?.data?.text || '').includes('负数 ID'), '应返回转发节点');
+
+    // read_forward 没有事件上下文：get_msg 从 SnowLuma 缓存里找回 forward 段。
+    const restored = await app.onebot.call('get_forward_msg', { message_id: negMid });
+    assert.ok(Array.isArray(restored?.messages) && restored.messages.length > 0, '无事件上下文时也应通过 get_msg 回退');
+
+    // 正数 ID 保持原路径，不能误触发负数兼容逻辑。
+    const positive = await app.onebot.call('get_forward_msg', { message_id: 9300 });
+    assert.ok(Array.isArray(positive?.messages) && positive.messages.length === 2, '正数 ID 仍按 message_id 展开');
+
+    pass('负数 message_id 合并转发：事件直取 res_id + get_msg 回退 + 正数路径不变');
+  }
+
+  // ── 场景 39：发送去重安全语义（回退防线，2026-09-13 二次实修）──
   {
     const { SendQueue } = await import('../src/sender.js');
     const { setRuntimeConfig, getConfig } = await import('../src/config.js');
@@ -1495,7 +1538,7 @@ refs:
     pass('发送去重：窗口内跳过、0 可关闭、失败可重试（成功才记账）');
   }
 
-  // ── 场景 39：本地收藏表情路径白名单（防本地文件被当表情发出）──
+  // ── 场景 40：本地收藏表情路径白名单（防本地文件被当表情发出）──
   {
     const { localStickerPath } = await import('../src/sticker-manager.js');
     const imgDir = path.join(dataDir, 'sticker-images');
