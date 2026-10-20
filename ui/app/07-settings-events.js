@@ -1013,6 +1013,74 @@ function bindSettingsEvents(c) {
     checkUpdateBtn.disabled = false;
   });
 
+  // ── 自动更新（安装版专用；压缩包/dev 下 preload 不存在或返回 unsupported）──
+  // 两条更新链路是并列的，不是二选一：
+  //   · 安装版：electron-updater 后台下载 → 这里点"立即重启更新"；
+  //   · 压缩包版：上面的"检查更新"给 Release 链接，手动覆盖解压。
+  //
+  // ⚠️ 监听器必须**无条件绑定**，不能包在 `if (shell)` 里：界面接线测试会扫
+  //    "可见但没接线的元素"，条件绑定会让它在 jsdom（没有 preload）下判成缺陷。
+  //    没 shell 时按钮点了给出明确提示即可 —— 这比"按钮存在但点了毫无反应"更好。
+  const shell = window.qqAgentShell;
+  {
+    const boxEl = $('#auto-update-box');
+    const stateEl = $('#auto-update-state');
+    const installBtn = $('#auto-update-install-btn');
+    const autoCheckBtn = $('#auto-update-check-btn');
+    const fmtStatus = (s) => {
+      if (!s || s.status === 'unsupported') return '当前为压缩包 / 开发模式，应用内自动更新不可用';
+      switch (s.status) {
+        case 'checking': return '正在检查新版本…';
+        case 'available': return `发现新版本 v${s.latest}，正在后台下载…`;
+        case 'downloading': return `正在下载 v${s.latest}：${s.percent || 0}%`;
+        case 'downloaded': return `✅ v${s.latest} 已下载完成，点「立即重启更新」生效`;
+        case 'error': return `检查失败：${s.error || '未知错误'}`;
+        default: return `已是最新（v${s.current}）`;
+      }
+    };
+    const applyStatus = (s) => {
+      if (!s || s.status === 'unsupported') { if (boxEl) boxEl.style.display = 'none'; return; }
+      if (boxEl) boxEl.style.display = '';
+      if (stateEl) stateEl.textContent = fmtStatus(s);
+      if (installBtn) installBtn.style.display = s.status === 'downloaded' ? '' : 'none';
+    };
+    // 没有 preload 通道（浏览器直接开控制台 / 压缩包版）：整块隐藏，不留死按钮
+    if (!shell?.updateStatus) {
+      if (boxEl) boxEl.style.display = 'none';
+    } else {
+      shell.updateStatus().then(applyStatus).catch(() => { if (boxEl) boxEl.style.display = 'none'; });
+    }
+    autoCheckBtn?.addEventListener('click', async () => {
+      if (!shell?.updateCheck) {
+        if (stateEl) stateEl.textContent = '当前为压缩包 / 开发模式，请用上面的「检查更新」下载新版压缩包';
+        return;
+      }
+      autoCheckBtn.disabled = true;
+      if (stateEl) stateEl.textContent = '正在检查新版本…';
+      try { applyStatus(await shell.updateCheck()); }
+      catch (e) { if (stateEl) stateEl.textContent = `检查失败：${e.message}`; }
+      autoCheckBtn.disabled = false;
+    });
+    installBtn?.addEventListener('click', async () => {
+      if (!shell?.updateInstall) {
+        if (stateEl) stateEl.textContent = '当前为压缩包 / 开发模式，应用内重启更新不可用';
+        return;
+      }
+      installBtn.disabled = true;
+      try {
+        const r = await shell.updateInstall();
+        if (!r?.ok) {
+          if (stateEl) stateEl.textContent = r?.error || '重启更新失败';
+          installBtn.disabled = false;
+        }
+        // 成功时应用会自己退出，不必恢复按钮
+      } catch (e) {
+        if (stateEl) stateEl.textContent = `重启更新失败：${e.message}`;
+        installBtn.disabled = false;
+      }
+    });
+  }
+
   // ── OneBot 区块事件 ──
   const openSnowlumaBtn = $('#open-snowluma-btn');
   if (openSnowlumaBtn) openSnowlumaBtn.addEventListener('click', async () => {

@@ -18,5 +18,10 @@ contextBridge.exposeInMainWorld('qqAgentShell', {
   // 定位"Chromium 网络栈被本机软件压制"还是"机器出口对目标域整体异常"
   captchaNetProbe: () => ipcRenderer.invoke('qqa-captcha-net-probe'),
   // session 层阿里域重定向拦截器的注册状态（判断新代码是否真的在跑）
-  captchaInterceptorStatus: () => ipcRenderer.invoke('qqa-captcha-interceptor-status')
+  captchaInterceptorStatus: () => ipcRenderer.invoke('qqa-captcha-interceptor-status'),
+  // 安装版自动更新（electron/updater.js）。压缩包/dev 下 status 恒为 'unsupported'，
+  // 渲染层据此隐藏"立即重启更新"按钮。
+  updateStatus: () => ipcRenderer.invoke('qqa-update-status'),
+  updateCheck: () => ipcRenderer.invoke('qqa-update-check'),
+  updateInstall: () => ipcRenderer.invoke('qqa-update-install')
 });

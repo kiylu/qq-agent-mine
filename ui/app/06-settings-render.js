@@ -1050,7 +1050,20 @@ function renderDesktopSection(c) {
       <div style="display:flex;gap:10px;align-items:center">
         <button class="btn btn-small" id="check-update-btn">检查更新</button>
         <span class="hint" id="update-hint" style="margin:0"></span>
-      </div></div>`;
+      </div></div>
+    <!-- 安装版专用：应用内下载 + 重启安装（压缩包版整块隐藏，见 07-settings-events.js） -->
+    <div class="field" id="auto-update-box" style="display:none">
+      <label>自动更新（安装版）</label>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="hint" id="auto-update-state" style="margin:0">正在读取状态…</span>
+        <button class="btn btn-small" id="auto-update-check-btn">立即检查</button>
+        <button class="btn btn-small btn-primary" id="auto-update-install-btn" style="display:none">立即重启更新</button>
+      </div>
+      <div class="hint" style="margin-top:6px">
+        安装版会在后台自动下载新版本，下载完成后下次退出应用时自动安装；
+        想马上用新版就点「立即重启更新」（会先正常关闭 QQ 与 SnowLuma 再重启）。
+      </div>
+    </div>`;
 }
 
 function renderOnebotSection(c) {

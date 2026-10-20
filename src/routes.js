@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR } from './config.js';
+import { getConfig, updateConfig, deepMerge as deepMergeConfig, DATA_DIR, ROOT } from './config.js';
 import { customSearch } from './web-search.js';
 import { listModels, chatCompletion, resolveApiKey, estimateCost, cacheHitRate } from './llm.js';
 import { resolveOfficialPrice, listOfficialPrices } from './model-prices.js';
@@ -67,6 +67,139 @@ function customPersonaList() {
 }
 
 /**
+ * ── 一键安装协议端：setup.mjs 子进程管理（安装版专用）───────────────────
+ *
+ * 压缩包版让用户跑 `npm run setup`；安装版用户机器上**没有 Node**，所以改用
+ * Electron 自带的 Node 运行时：设置 ELECTRON_RUN_AS_NODE=1 后，QQ Agent.exe
+ * 本身就是一个完整的 Node v20（Electron 33 → Node 20.18），额外体积 0 字节。
+ *
+ * 为什么 spawn 而不是 import()：
+ *   · setup.mjs 顶层是裸的 `main().catch(...)`，没有 invokedDirectly 守卫，
+ *     import 会直接触发安装；
+ *   · 进程隔离后 setup 崩了带不走主进程，取消/超时也好处理；
+ *   · 进度靠解析 stdout 拿（setup 是流式下载，本来就有可读的进度文本）。
+ *
+ * 状态放模块级：同一时刻只允许一个安装进程。setup 要往安装目录写 1.6 GB，
+ * 重复点会两个进程抢同一批 .part 文件。
+ */
+const setupJob = {
+  proc: null,
+  running: false,
+  startedAt: 0,
+  finishedAt: 0,
+  ok: null,                 // null=未跑完，true/false=结束状态
+  code: null,
+  error: '',
+  lines: []                 // 最近 400 行输出（UI 轮询显示）
+};
+const SETUP_MAX_LINES = 400;
+
+function pushSetupLine(text) {
+  const line = String(text ?? '').replace(/\r$/, '');
+  if (!line.trim()) return;
+  setupJob.lines.push({ at: Date.now(), text: line });
+  if (setupJob.lines.length > SETUP_MAX_LINES) setupJob.lines.splice(0, setupJob.lines.length - SETUP_MAX_LINES);
+}
+
+/** 安装版才允许一键安装：压缩包版/开发模式下让用户按 README 跑 npm。 */
+function setupSupported() {
+  return process.env.QQ_AGENT_PACKAGED === '1';
+}
+
+function setupStatus() {
+  return {
+    supported: setupSupported(),
+    running: setupJob.running,
+    startedAt: setupJob.startedAt,
+    finishedAt: setupJob.finishedAt,
+    ok: setupJob.ok,
+    code: setupJob.code,
+    error: setupJob.error,
+    lines: setupJob.lines.slice(-120)
+  };
+}
+
+/**
+ * 启动 setup.mjs。
+ * @param {object} body { force?: boolean, skipQQ?: boolean }
+ */
+function startSetup(body = {}) {
+  if (!setupSupported()) {
+    return { ok: false, error: '当前是压缩包/开发模式：请在项目目录运行 npm run setup' };
+  }
+  if (setupJob.running) {
+    return { ok: false, error: '安装已在进行中', status: setupStatus() };
+  }
+  const script = path.join(ROOT, 'scripts', 'setup.mjs');
+  if (!fs.existsSync(script)) {
+    return { ok: false, error: '安装脚本缺失：scripts/setup.mjs（安装包不完整，请重新安装）' };
+  }
+
+  const argv = [script];
+  if (body?.force) argv.push('--force');
+  if (body?.skipQQ) argv.push('--skip-qq');
+
+  setupJob.running = true;
+  setupJob.startedAt = Date.now();
+  setupJob.finishedAt = 0;
+  setupJob.ok = null;
+  setupJob.code = null;
+  setupJob.error = '';
+  setupJob.lines = [];
+  pushSetupLine(`$ ${process.execPath} ${argv.map((a) => path.basename(a)).join(' ')}`);
+
+  let proc;
+  try {
+    proc = spawn(process.execPath, argv, {
+      cwd: ROOT,                                     // = resources/app，setup 往里写 snowluma/ 与 runtime/
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch (error) {
+    setupJob.running = false;
+    setupJob.ok = false;
+    setupJob.error = String(error?.message ?? error);
+    pushSetupLine('❌ 启动失败：' + setupJob.error);
+    return { ok: false, error: setupJob.error };
+  }
+
+  setupJob.proc = proc;
+  const onChunk = (stream) => (buf) => {
+    for (const line of String(buf).split(/\r?\n/)) pushSetupLine(stream ? `[${stream}] ${line}` : line);
+  };
+  proc.stdout?.on('data', onChunk(''));
+  proc.stderr?.on('data', onChunk('stderr'));
+  proc.on('error', (error) => {
+    setupJob.error = String(error?.message ?? error);
+    pushSetupLine('❌ ' + setupJob.error);
+  });
+  proc.on('close', (code) => {
+    setupJob.running = false;
+    setupJob.proc = null;
+    setupJob.finishedAt = Date.now();
+    setupJob.code = code;
+    setupJob.ok = code === 0;
+    if (code !== 0) setupJob.error = setupJob.error || `安装进程退出码 ${code}`;
+    pushSetupLine(code === 0 ? '✅ 安装完成' : `❌ 安装失败（退出码 ${code}）`);
+  });
+
+  return { ok: true, status: setupStatus() };
+}
+
+function cancelSetup() {
+  if (!setupJob.running || !setupJob.proc) {
+    return { ok: false, error: '当前没有正在进行的安装' };
+  }
+  try {
+    // Windows 上 taskkill /T 才能带走 setup 派生出的下载/解压子进程
+    spawn('taskkill', ['/PID', String(setupJob.proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+  } catch { /* 杀不掉就让 close 事件自己收尾 */ }
+  pushSetupLine('⏹ 已请求取消安装');
+  return { ok: true };
+}
+
+/**
  * 构建路由表。
  * @param {object} deps 依赖注入
  */
@@ -82,6 +215,7 @@ export function createRoutes(deps) {
     snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaStatus, snowlumaLogs,
     launchSnowluma, stopSnowluma,
     qqPortableStatus, qqPortableLogs, launchPortableQQ, stopPortableQQ,
+    setupHint,
     visionScan,
     buildUsageStats, buildUsageBreakdown,
     reloadSkills
@@ -157,6 +291,9 @@ export function createRoutes(deps) {
             ...snowlumaStatus()
           },
           qqPortable: await qqPortableStatus(),
+          // 安装形态：UI 据此决定"未安装协议端"时给按钮还是给 npm 命令
+          packaged: process.env.QQ_AGENT_PACKAGED === '1',
+          setupHint: setupHint ? setupHint() : '',
           orchestrator: orchestrator.statusSummary(),
           usage,
           cost,
@@ -346,6 +483,34 @@ export function createRoutes(deps) {
     {
       method: 'GET', pattern: '/api/qq-portable/status',
       handler: async ({ res, json }) => json(res, 200, await qqPortableStatus())
+    },
+
+    // ── 一键安装协议端（安装版专用）────────────────────────────────────
+    //
+    // 压缩包版让用户跑 `npm run setup`；安装版用户机器上**没有 Node**，
+    // 所以这里用 Electron 自带的 Node 运行时去 spawn scripts/setup.mjs：
+    //   设置 ELECTRON_RUN_AS_NODE=1 后，electron.exe 就是一个完整的 Node v20，
+    //   setup.mjs 只用内置模块 + 两个本地文件，实测可直接跑通（额外体积 0 字节）。
+    //
+    // 用 spawn 而不是 import()：setup.mjs 顶层是裸的 `main().catch(...)`（没有
+    // invokedDirectly 守卫），import 会直接触发安装；而且进程隔离后 setup 崩了
+    // 也带不走主进程，进度靠解析 stdout 拿。
+    //
+    // 状态放在模块级：一次只允许一个安装进程（setup 要写 1.6 GB，重复点会互踩）。
+    {
+      method: 'GET', pattern: '/api/setup/status',
+      handler: async ({ res, json }) => json(res, 200, setupStatus())
+    },
+    {
+      method: 'POST', pattern: '/api/setup/run',
+      handler: async ({ req, res, json }) => {
+        const started = startSetup(await bodyOf(req));
+        return json(res, started.ok ? 200 : 409, started);
+      }
+    },
+    {
+      method: 'POST', pattern: '/api/setup/cancel',
+      handler: async ({ res, json }) => json(res, 200, cancelSetup())
     },
 
     // ── 体检 / 引导 ──────────────────────────────────────────────────

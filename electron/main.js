@@ -34,8 +34,17 @@ process.on('uncaughtException', (error) => {
 });
 
 // AppUserModelID：让 Windows 把窗口归到「QQ Agent」身份下（任务栏分组/图标/通知），
-// 否则 dev 模式下会被当成裸 electron.exe，钉任务栏变成 electron 图标
-app.setAppUserModelId('cn.kondius.qq-agent');
+// 否则 dev 模式下会被当成裸 electron.exe，钉任务栏变成 electron 图标。
+// ⚠️ 必须与 package.json 的 build.appId 一致：NSIS 卸载器按 appId 注册/注销
+//    AppUserModelId（WinShell::UninstAppUserModelId "${APP_ID}"），两者不一致时
+//    卸载后任务栏/通知里会残留一条幽灵条目。
+app.setAppUserModelId('cn.kiylu.qq-agent');
+
+// 安装版标记：src/ 与 ui/ 里要区分"压缩包版（有 npm）"和"安装版（没有 Node 环境）"。
+// 不能用 app.isPackaged 直接判断 —— src/ 被 src/server.js（headless）和测试共用，
+// 它们 import('electron') 会崩。环境变量是壳与核的唯一切面，与 QQ_AGENT_DATA_DIR 同一约定。
+// 必须在 import('../src/app.js') 之前设好。
+process.env.QQ_AGENT_PACKAGED = app.isPackaged ? '1' : '';
 
 // ── 验证码网络诊断（2026-09-26）──
 // 渲染层（Chromium 栈）访问 alicdn/aliyuncs 失败但 kondius.cn 通、系统 curl 直连却正常。
@@ -152,6 +161,27 @@ ipcMain.on('app-refocus', () => {
 let core = null;
 let tray = null;
 let quitting = false;
+/** 自动更新控制器（electron/updater.js）。dev/压缩包版下 enabled=false。 */
+let updater = null;
+/** 更新就绪后用户点了"立即重启"：等 core.stop() 跑完再真正安装。 */
+let installUpdateOnQuit = false;
+
+// ── 自动更新 IPC（渲染层「设置 → 桌面端」用）──
+// 更新逻辑在 electron/updater.js；这里只做通道。没有 app.isPackaged 时
+// updater 返回 unsupported，UI 会据此隐藏"立即重启"按钮。
+ipcMain.handle('qqa-update-status', () => updater?.state ?? { enabled: false, status: 'unsupported' });
+ipcMain.handle('qqa-update-check', async () => (updater ? updater.check() : { enabled: false, status: 'unsupported' }));
+ipcMain.handle('qqa-update-install', () => {
+  if (!updater?.enabled) return { ok: false, error: '当前不是安装版，请到 Release 页下载新版压缩包' };
+  if (updater.state.status !== 'downloaded') return { ok: false, error: '更新尚未下载完成' };
+  // 不能直接 quitAndInstall：core.stop() 是 async（abortAll / 关 SSE / 关 server /
+  // 释放单实例锁），进程若在清理链跑一半时被销毁，会话进度会丢、SnowLuma 子进程会变孤儿。
+  // 走 before-quit 那条既有的清理链，清理完在 finally 里安装。
+  installUpdateOnQuit = true;
+  quitting = true;
+  app.quit();
+  return { ok: true };
+});
 
 function applyAutoStart() {
   if (!core) return;
@@ -309,6 +339,26 @@ app.whenReady().then(async () => {
     await createWindow(port);
     applyAutoStart();
     createTray();
+    // 自动更新：app ready + 核心起来之后再初始化（它要读 resources/app-update.yml，
+    // 而且首次检查延迟 60 秒，不会和首屏抢 IO）。
+    try {
+      const { createUpdater } = await import('./updater.js');
+      updater = createUpdater({
+        // 托盘气泡点"立即重启"：和设置页按钮同一条路径
+        onQuitRequested: () => {
+          if (updater?.state.status !== 'downloaded') return;
+          installUpdateOnQuit = true;
+          quitting = true;
+          app.quit();
+        },
+        onChange: (s) => bootDiag(`更新状态 ${s.status}${s.latest ? ' latest=' + s.latest : ''}`)
+      });
+      bootDiag('自动更新已初始化 enabled=' + updater.enabled);
+    } catch (error) {
+      // 更新组件坏了不能影响主程序
+      console.error('[electron] 自动更新初始化失败:', error?.message ?? error);
+      bootDiag('自动更新初始化失败: ' + String(error?.message ?? error));
+    }
     bootDiag('窗口与托盘就绪');
   } catch (error) {
     console.error('[electron] 启动失败:', error);
@@ -339,5 +389,11 @@ app.on('before-quit', (event) => {
   Promise.resolve()
     .then(() => core.stop())
     .catch((error) => console.error('[electron] 退出清理失败:', error?.message ?? error))
-    .finally(() => app.quit());
+    .finally(() => {
+      // 用户点了"立即重启更新"：清理完先交给 electron-updater 装，它会自己 app.quit()。
+      // 装失败（或根本没下载完）就退回普通退出，不能把用户卡在"点了没反应"。
+      if (installUpdateOnQuit && updater?.install()) return;
+      installUpdateOnQuit = false;
+      app.quit();
+    });
 });

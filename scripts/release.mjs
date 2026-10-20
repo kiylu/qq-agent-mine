@@ -7,6 +7,11 @@
  *   node scripts/release.mjs --notes "修了 XX"   # 带更新说明
  *   node scripts/release.mjs --skip-pack   # 复用 dist/ 里已有的包（跳打包）
  *   node scripts/release.mjs --yes         # 跳过交互确认
+ *   node scripts/release.mjs --zip-only    # 只发压缩包（不动安装版）
+ *   node scripts/release.mjs --installer-only   # 只发安装包 + latest.yml
+ *
+ * 发安装包前先跑 `npm run dist`（electron-builder 出 exe / latest.yml / blockmap），
+ * 产物落在 dist/，本脚本负责把它们和 zip 一起挂到同一个 Release。
  *
  * ── 版本与 tag 的关系（唯一真相是 package.json）────────────────────────────
  *   版本号只写在 package.json 的 version 字段里，**不允许手打 tag**。
@@ -18,9 +23,20 @@
  *   tag 再带就是重复；更关键的是 compareSemver 只取前三段数字，
  *   "v1.1.1-2026-10-03" 这种多段串会被误解析。
  *
- * ── 为什么不用 electron-updater ────────────────────────────────────────
- *   它是给 NSIS 安装包做差分更新的，本项目对外分发 zip（解压覆盖式），用不了。
- *   所以这里只负责"把产物挂到 Release 上"，下载与覆盖由用户手动做。
+ * ── 两条产线，一次发布 ──────────────────────────────────────────────────
+ *   压缩包（pack-release.mjs）：qq-agent-<版本>-<日期>-full.zip，解压覆盖式；
+ *   安装包（electron-builder）：QQ-Agent-<版本>-Setup.exe + latest.yml + *.blockmap，
+ *     latest.yml 是 electron-updater 的更新清单，**必须和 exe 一起上传**，
+ *     否则安装版用户永远收不到更新（updater 找不到清单会报 ERR_UPDATER_NO_PUBLISHED_VERSIONS）。
+ *
+ *   为什么不交给 electron-builder --publish always 自己传：
+ *   它会另建一个 Release，和这里的 gh release create 打架（同一个 tag 两个 Release）。
+ *   所以统一由本脚本收集 dist/ 里的全部产物、一次挂上去。
+ *
+ * ── 自动更新怎么拿到这些产物 ────────────────────────────────────────────
+ *   安装版内置 electron-updater（electron/updater.js），读 resources/app-update.yml
+ *   里的 provider: github + owner/repo，去查本仓库的 latest release 并下载 exe。
+ *   所以发版动作不变：还是本脚本。只是产物多挂几个文件。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -42,6 +58,9 @@ const val = (f, d) => {
 const DRY = has('--dry-run');
 const SKIP_PACK = has('--skip-pack');
 const ASSUME_YES = has('--yes');
+/** 只发 zip / 只发安装包。默认两个都发。 */
+const ZIP_ONLY = has('--zip-only');
+const INSTALLER_ONLY = has('--installer-only');
 const NOTES = val('--notes', '');
 
 const log = (...a) => console.log(...a);
@@ -144,14 +163,65 @@ if (!hasGh && !DRY) {
 log('  gh 命令   : ' + (hasGh ? '已安装' : '未安装（dry-run 不需要）'));
 
 // ── 2) 打包 ─────────────────────────────────────────────────────────────
+const distDir = path.join(ROOT, 'dist');
+
+/**
+ * 从 dist/ 收集本次要发布的产物。
+ *
+ * 两条产线的文件名规则不同，必须分开匹配：
+ *   · zip  ：qq-agent-<版本>-<日期>(-slim|-full).zip  → 用 startsWith(`qq-agent-${VERSION}-`) 认版本
+ *   · 安装包：QQ-Agent-<版本>-Setup.exe / latest.yml / *.blockmap
+ *            → exe 用 `QQ-Agent-${VERSION}-Setup.exe` 精确匹配（版本号就在名字里）
+ *            → latest.yml 与 blockmap **没有版本号**，只能按"最近一次 dist 构建"取，
+ *              所以先确认 exe 存在，再把它们一起带上（latest.yml 里的 version 字段
+ *              会由 electron-builder 写成当前版本，这里再校验一次，防止拿错）。
+ */
+function collectArtifacts() {
+  if (!fs.existsSync(distDir)) return [];
+  const files = fs.readdirSync(distDir);
+  const out = [];
+
+  // zip / tar.gz：按版本前缀认
+  if (!INSTALLER_ONLY) {
+    for (const f of files) {
+      if (f.startsWith(`qq-agent-${VERSION}-`) && /\.(zip|tar\.gz)$/.test(f)) out.push(path.join(distDir, f));
+    }
+  }
+
+  // 安装包：exe 按版本精确匹配
+  if (!ZIP_ONLY) {
+    const exe = `QQ-Agent-${VERSION}-Setup.exe`;
+    if (files.includes(exe)) {
+      out.push(path.join(distDir, exe));
+      // latest.yml 必须和 exe 一起上传，否则 electron-updater 找不到更新清单
+      const latestYml = path.join(distDir, 'latest.yml');
+      if (fs.existsSync(latestYml)) {
+        const body = fs.readFileSync(latestYml, 'utf8');
+        const m = /^version:\s*(.+)$/m.exec(body);
+        const ymlVersion = String(m?.[1] ?? '').trim();
+        if (ymlVersion && ymlVersion !== VERSION) {
+          fail(`dist/latest.yml 里的版本是 ${ymlVersion}，与 package.json 的 ${VERSION} 不符。`
+            + '\n  electron-updater 会按 latest.yml 判断有没有新版 —— 版本对不上会推出错版。'
+            + '\n  请重新跑一次 npm run dist 生成与当前版本匹配的安装包。');
+        }
+        out.push(latestYml);
+      } else {
+        log('  ⚠ 提示    : dist/ 里没有 latest.yml —— 安装版将收不到自动更新（请确认 npm run dist 成功）');
+      }
+      // 差分更新用的 blockmap（有就带上，没有只是退化成全量下载）
+      for (const f of files) {
+        if (f === `${exe}.blockmap` || f === 'latest.yml.blockmap') out.push(path.join(distDir, f));
+      }
+    }
+  }
+  return [...new Set(out)];
+}
+
 let artifacts = [];
 if (SKIP_PACK) {
   // 复用 dist/ 里已有的包，但要**核对版本号** —— 用旧包的版本发版是最隐蔽的坑
-  const distDir = path.join(ROOT, 'dist');
   if (!fs.existsSync(distDir)) fail('--skip-pack 但 dist/ 不存在');
-  artifacts = fs.readdirSync(distDir)
-    .filter((f) => f.startsWith(`qq-agent-${VERSION}-`) && /\.(zip|tar\.gz)$/.test(f))
-    .map((f) => path.join(distDir, f));
+  artifacts = collectArtifacts();
   if (!artifacts.length) {
     fail(`--skip-pack 但 dist/ 里没有匹配当前版本 ${VERSION} 的包：\n  `
       + fs.readdirSync(distDir).join('\n  '));
@@ -162,18 +232,24 @@ if (SKIP_PACK) {
   if (DRY) {
     log('             dry-run：跳过实际打包');
   } else {
-    try {
-      execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'pack-release.mjs')], {
-        cwd: ROOT, stdio: 'inherit'
-      });
-    } catch (e) {
-      fail('打包失败：' + (e?.message ?? e));
+    if (!INSTALLER_ONLY) {
+      try {
+        execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'pack-release.mjs')], {
+          cwd: ROOT, stdio: 'inherit'
+        });
+      } catch (e) {
+        fail('打包失败：' + (e?.message ?? e));
+      }
     }
-    const distDir = path.join(ROOT, 'dist');
-    artifacts = fs.readdirSync(distDir)
-      .filter((f) => f.startsWith(`qq-agent-${VERSION}-`) && /\.(zip|tar\.gz)$/.test(f))
-      .map((f) => path.join(distDir, f));
-    if (!artifacts.length) fail(`打包完成但 dist/ 里没找到 qq-agent-${VERSION}-* 的产物`);
+    // 安装包不在这里现场构建：electron-builder 要 3–5 分钟且依赖 nsis 离线缓存，
+    // 放进发版流程会让每次发版都变慢、且一旦失败 tag 还没打就中断了。
+    // 约定：发版前先手动跑一次 `npm run dist`，产物落在 dist/。
+    if (!ZIP_ONLY && !fs.existsSync(path.join(distDir, `QQ-Agent-${VERSION}-Setup.exe`))) {
+      log(`  ⚠ 提示    : 没找到 dist/QQ-Agent-${VERSION}-Setup.exe`);
+      log('             安装版将不会随本次发版更新。要一起发就先跑：npm run dist');
+    }
+    artifacts = collectArtifacts();
+    if (!artifacts.length) fail(`打包完成但 dist/ 里没找到 ${VERSION} 的产物`);
   }
 }
 log('  产物      : ' + (artifacts.length ? artifacts.map((a) => path.basename(a)).join(', ') : '(dry-run 未产出)'));
@@ -235,5 +311,9 @@ try {
 console.log('\n' + '═'.repeat(40));
 console.log('✅ 发版完成：' + TAG);
 console.log('   ' + `https://github.com/${repo}/releases/tag/${TAG}`);
-console.log('   下载地址就是上面页面里的产物链接，用户点它下载 zip 覆盖安装目录。');
+const hasZip = artifacts.some((a) => /\.(zip|tar\.gz)$/.test(a));
+const hasExe = artifacts.some((a) => /-Setup\.exe$/i.test(a));
+if (hasZip) console.log('   压缩包：用户下载后解压覆盖安装目录（保留 data/）。');
+if (hasExe) console.log('   安装包：已安装的用户会在后台自动更新（electron-updater 读 latest.yml）。');
+if (!hasExe) console.log('   ⚠ 本次没发安装包 —— 安装版用户收不到自动更新。');
 console.log('═'.repeat(40));

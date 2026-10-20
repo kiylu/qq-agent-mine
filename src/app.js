@@ -58,8 +58,9 @@ function allowed(kind, id, cfg) {
 // 打 tag + 传产物，Release 一发布这里就自动有了）。
 // 由后端代取而不是前端直连：绕过 CORS，且失败信息能统一回给 UI。
 //
-// 为什么不用 electron-updater：那是给 NSIS 安装包做差分更新的，
-// 本项目对外分发的是 pack-release.mjs 产出的 zip（解压覆盖式），用不了。
+// 这条链路只管**压缩包版**（解压覆盖式更新）：告诉用户有新版本、给 zip 下载链接。
+// 安装版走另一条路 —— electron-updater 在壳里（electron/updater.js）后台下载
+// 并重启安装，见那里的说明。两条链路读同一个 Release，互不冲突。
 const UPDATE_RELEASE_API =
   'https://api.github.com/repos/kiylu/qq-agent-mine/releases/latest';
 /** Release 页（下载失败时让人能自己去捞）。 */
@@ -319,6 +320,20 @@ export function createApp({ log = console.log } = {}) {
     emit('qq-portable-log', line);
   }
 
+  /**
+   * "协议端/便携 QQ 没装"时的引导文案。
+   *
+   * 两种分发形态给的话不一样：压缩包版有 npm，跑 `npm run setup` 就行；
+   * 安装版用户机器上**根本没有 Node**，让他去开命令行只会更困惑。
+   * 判断依据是 electron/main.js 设的 QQ_AGENT_PACKAGED（见那里的说明）——
+   * 不用 app.isPackaged，因为 src/ 也被 headless 与测试引用。
+   */
+  function setupHint() {
+    return process.env.QQ_AGENT_PACKAGED
+      ? '请在「SnowLuma」页点「一键安装」自动下载（约 1.6 GB，需要联网）'
+      : '请先运行 npm run setup';
+  }
+
   /** 检查便携 QQ 是否已安装 */
   function qqPortableReady() {
     return fs.existsSync(qqPortableExe());
@@ -402,7 +417,7 @@ export function createApp({ log = console.log } = {}) {
   /** 启动便携 QQ（如已在运行则跳过） */
   async function launchPortableQQ() {
     if (!qqPortableReady()) {
-      return { ok: false, error: '便携 QQ 未安装：请先运行 npm run setup' };
+      return { ok: false, error: `便携 QQ 未安装：${setupHint()}` };
     }
     // 启动互斥：连点「启动 QQ」时，第一次还在 spawn，第二次直接拒绝
     if (qqPortableLaunching) {
@@ -1317,6 +1332,7 @@ export function createApp({ log = console.log } = {}) {
     snowlumaDir, snowlumaWsPort, snowlumaWebuiUrl, snowlumaWebuiPort, snowlumaStatus, snowlumaLogs,
     launchSnowluma, stopSnowluma,
     qqPortableStatus, qqPortableLogs, launchPortableQQ, stopPortableQQ,
+    setupHint,
     visionScan, isPortOpen,
     buildUsageStats, buildUsageBreakdown,
     reloadSkills
@@ -1684,7 +1700,7 @@ export function createApp({ log = console.log } = {}) {
     releaseInstanceLock();
   }
 
-  return { server, onebot, store, memory, stickers, sender, sessions, orchestrator, start, stop, emit, getConfig, updateConfig, launchSnowluma, stopSnowluma, snowlumaStatus, launchPortableQQ, stopPortableQQ, qqPortableStatus, reloadSkills };
+  return { server, onebot, store, memory, stickers, sender, sessions, orchestrator, start, stop, emit, getConfig, updateConfig, launchSnowluma, stopSnowluma, snowlumaStatus, launchPortableQQ, stopPortableQQ, qqPortableStatus, reloadSkills, setupHint };
 }
 
 /**

@@ -96,7 +96,29 @@
 
 ## 安装与使用
 
-### 三步搞定（推荐）
+两种装法，功能完全一样，按习惯挑一种：
+
+| | 安装版（推荐给普通用户） | 压缩包 / 源码版（推荐给开发者） |
+|---|---|---|
+| 获取 | [Releases](https://github.com/kiylu/qq-agent-mine/releases/latest) 下 `QQ-Agent-x.y.z-Setup.exe` | 下 `qq-agent-x.y.z-日期-full.zip`，或 `git clone` |
+| 运行前置 | **不需要 Node / npm** | 需要 Node 20+ 与 npm |
+| 协议端 | 装完在「SnowLuma」页点**一键安装** | `npm run setup` |
+| 更新 | 应用内自动下载，重启即生效 | 重新下载 zip 解压覆盖 |
+
+### 安装版（Windows）
+
+1. 下载 `QQ-Agent-x.y.z-Setup.exe`，双击安装（默认装到 `%LOCALAPPDATA%\Programs\QQ Agent`，不需要管理员权限）；
+2. 首次启动后进「SnowLuma」页 → 点**一键安装协议端** —— 自动下载 SnowLuma 与固定版本便携 QQ
+   （约 1.7 GB，需要联网；中途可取消，下次接着来）；
+3. 装完点「一键启动（QQ + SnowLuma）」，在弹出的 QQ 窗口扫码登录；
+4. 进设置页填接口地址和 Key → 选模型 → 勾白名单。
+
+> 未签名 exe 首次运行时 Windows SmartScreen 会拦一下，点「更多信息 → 仍要运行」即可。
+>
+> 协议端（SnowLuma）与便携 QQ **不随安装包分发**：前者是带 EULA 的第三方项目，
+> 后者是腾讯的 1.6 GB 客户端 —— 都由第 2 步在你自己机器上下载。
+
+### 压缩包 / 源码版
 
 ```bash
 git clone https://github.com/kiylu/qq-agent-mine.git
@@ -161,11 +183,44 @@ npm run test:coverage # 覆盖测试（模块层 + 全部 HTTP 接口 + 端到�
 npm run test:all     # 两套一起跑
 ```
 
+打包与发版：
+
+```bash
+npm run pack:release # 出压缩包 dist/qq-agent-<版本>-<日期>-full.zip
+npm run dist         # 出安装包 dist/QQ-Agent-<版本>-Setup.exe + latest.yml（electron-builder，3–5 分钟）
+npm run release      # 打 tag + 把 dist/ 里当前版本的 zip 与安装包一起挂到 GitHub Release
+npm run release:dry  # 演练：只打印将做什么，不打 tag 不上传
+```
+
+> 安装版靠 Release 里的 `latest.yml` 判断有没有新版 —— 发版时漏传它，已安装的用户就收不到更新。
+> `npm run release` 会自动带上；手工发 Release 时别只传 exe。
+
 > 界面接线检查依赖 jsdom，但它不是本项目的依赖 —— 没装时会打印提示并**自动跳过**，不影响其它套件。
 
 ---
 
-## 升级与回滚（覆盖式，数据不丢）
+## 升级与回滚
+
+**两种装法的升级方式不同，但都不会碰你的 `data/`。**
+
+### 安装版：自动更新
+
+应用启动后会在后台查一次新版本（之后每 6 小时一次），有新版就**静默下载**；
+下载完成后：
+
+- 下次正常退出应用时自动安装并重启；
+- 或者立刻生效：**设置 → 桌面端 → 立即重启更新**（会先正常关闭 QQ 与 SnowLuma）。
+
+更新来自本仓库的 GitHub Release（`latest.yml` + `QQ-Agent-x.y.z-Setup.exe`），走
+electron-updater 的差分下载，通常只有几 MB。
+
+> 覆盖安装时，安装器会先把你自装的 `snowluma/` 与 `runtime/`（1.7 GB）**搬出去、装完再搬回来**，
+> 所以升级不会让你重新下载协议端；`data/`、SnowLuma 登录态同样保留（免重新扫码）。
+>
+> 国内直连 GitHub 不稳的话，自动更新失败只会在设置页留一条状态，不影响使用 ——
+> 也可以手动去 [Releases](https://github.com/kiylu/qq-agent-mine/releases/latest) 下新版安装包覆盖安装。
+
+### 压缩包 / 源码版：覆盖解压
 
 **发布包里从来不含 `data/`，所以「覆盖」永远不会碰到你的聊天记录、记忆、Key 与登录态。**
 
@@ -181,6 +236,9 @@ npm run test:all     # 两套一起跑
   
 所以**覆盖只动了代码、没动数据，回滚同样无损**。
 
+> 安装版用户也可以随时改回压缩包版：卸载安装版时 `data/` 不会被删（`deleteAppDataOnUninstall: false`），
+> 把解压出来的压缩包目录里的 `data/` 换成旧的即可。
+
 ---
 
 ## 风险与免责声明
@@ -193,9 +251,10 @@ npm run test:all     # 两套一起跑
 
 ## 许可与致谢
 
-- 本项目以 **MIT** 许可发布（见 [LICENSE](LICENSE)）。前置依赖 SnowLuma 是独立项目，
-    
-  受其自身许可约束，不受本项目许可覆盖。
+- 本项目以 **MIT** 许可发布（见 [LICENSE](LICENSE)）。LICENSE 里**保留上游作者 Kondius 的版权声明**，
+  kiylu 的版权行作为修改者追加在其后 —— 这是 MIT 的硬性要求
+  （"The above copyright notice … shall be included in all copies"），不是可选项。
+  前置依赖 SnowLuma 是独立项目，受其自身许可约束，不受本项目许可覆盖。
 - **上游**：[K0nd1us/QQ-agent](https://github.com/K0nd1us/QQ-agent)（作者 **Kondius**）——
     
   本二开版本的基础，功能全貌请看其 README。

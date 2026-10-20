@@ -482,8 +482,11 @@ async function runUpdateCheck({ manual = false } = {}) {
     renderUpdateDot();
     // 自动检查弹浮窗；本次启动内被用户关过就不再弹（手动点「检查更新」除外）
     if (updateAvailable && (!updateToastDismissed || manual)) {
-      // 对外分发的是 zip（解压覆盖式），不是安装包 —— 文案要说清怎么更新，
-      // 否则用户会去找那个不存在的"安装程序"。
+      // 这条提示只针对**压缩包版**（解压覆盖式）。安装版有自己的自动更新
+      // （electron/updater.js 后台下载 + 设置页「立即重启更新」），不弹这个浮窗，
+      // 否则用户会被两个"有新版本"的入口搞混。
+      const packaged = !!(state.status?.packaged);
+      if (packaged) return data;
       showUploadToast(
         `发现新版本 v${data.latest}（当前 v${data.current}）`,
         data.url,

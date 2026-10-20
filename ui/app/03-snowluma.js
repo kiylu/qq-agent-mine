@@ -104,6 +104,13 @@ async function loadSnowlumaPage({ quiet = false } = {}) {
       ? { top: oldAppPre.scrollTop, atBottom: oldAppPre.scrollTop + oldAppPre.clientHeight >= oldAppPre.scrollHeight - 40 }
       : null;
 
+    // 分发形态：安装版没有 Node/npm，给「一键安装」按钮；压缩包版给命令行。
+    // 由 /api/status 的 packaged 字段决定（后端读 QQ_AGENT_PACKAGED，见 electron/main.js）。
+    const packaged = !!s.packaged;
+    const setupMissingText = packaged
+      ? '便携 QQ 未安装，点下面的「一键安装」自动下载'
+      : '便携 QQ 未安装，请先运行 <code>npm run setup</code>';
+    const setupMissingShort = packaged ? '点「一键安装」' : '请先运行 npm run setup';
     box.innerHTML = `
       <div class="snowluma-page-card">
         <h2>SnowLuma（OneBot 网关）</h2>
@@ -113,13 +120,13 @@ async function loadSnowlumaPage({ quiet = false } = {}) {
         <div class="quick-start-section" style="background:var(--bg);border:none;border-radius:14px;padding:16px;margin-bottom:16px;box-shadow:var(--raise-sm)">
           <div style="font-size:15px;font-weight:600;margin-bottom:8px">🚀 快速启动</div>
           <div class="muted" style="font-size:13px;margin-bottom:12px;line-height:1.6">
-            ${!qqReady ? '便携 QQ 未安装，请先运行 <code>npm run setup</code>' :
+            ${!qqReady ? setupMissingText :
               !qqRunning ? '点击下面按钮，自动完成：启动 QQ → 启动 SnowLuma → 连接 OneBot' :
               !running ? 'QQ 已运行，点击启动 SnowLuma 并连接' :
               'SnowLuma 已运行，等待 OneBot 连接…'}
           </div>
-          <button class="btn btn-primary" id="quick-start-btn" style="font-size:14px;padding:10px 20px" ${!qqReady ? 'disabled' : ''}>
-            ${!qqReady ? '请先运行 npm run setup' :
+          <button class="btn btn-primary" id="quick-start-btn" style="font-size:14px;padding:10px 20px" ${!qqReady && !packaged ? 'disabled' : ''}>
+            ${!qqReady ? (packaged ? '一键安装协议端' : '请先运行 npm run setup') :
               !qqRunning ? '一键启动（QQ + SnowLuma）' :
               !running ? '启动 SnowLuma' :
               '等待连接…'}
@@ -132,7 +139,7 @@ async function loadSnowlumaPage({ quiet = false } = {}) {
           <div class="snowluma-state-row">
             <span class="dot ${qqRunning ? 'dot-on' : 'dot-off'}"></span>
             <span>QQ 内核：<strong>${qqRunning ? `运行中${qqPid ? `（pid ${qqPid}）` : ''}` : (qqReady ? '未启动' : '未安装')}</strong></span>
-            ${!qqReady ? '<span class="muted" style="color:var(--orange)">请先运行 npm run setup</span>' : ''}
+            ${!qqReady ? `<span class="muted" style="color:var(--orange)">${setupMissingShort}</span>` : ''}
           </div>
           ${qqReady ? `
           <div class="snowluma-state-row muted" style="font-size:12px">
@@ -227,6 +234,41 @@ async function loadSnowlumaPage({ quiet = false } = {}) {
     const appLogsRefreshBtn = $('#app-logs-refresh-btn');
     if (appLogsRefreshBtn) appLogsRefreshBtn.addEventListener('click', () => loadSnowlumaPage());
 
+    // ── 一键安装协议端（安装版专用）──
+    // 安装版没有 Node/npm：点按钮 → 后端用 ELECTRON_RUN_AS_NODE 跑 scripts/setup.mjs，
+    // 进度靠轮询 /api/setup/status（setup 是流式下载，stdout 有可读的进度文本）。
+    // 装完刷新整页，qqReady 变 true，快速启动按钮自动恢复可用。
+    let setupPollTimer = null;
+    async function pollSetup(btn, hint) {      try {
+        const st = await api('/api/setup/status');
+        const last = (st.lines || []).slice(-3).map((l) => l.text).join(' · ');
+        if (st.running) {
+          btn.textContent = '安装中…';
+          hint.textContent = last || '正在准备…';
+          return true;
+        }
+        clearInterval(setupPollTimer);
+        setupPollTimer = null;
+        if (st.ok) {
+          btn.textContent = '安装完成 ✓';
+          hint.textContent = '协议端已就绪，正在刷新…';
+          setTimeout(() => loadSnowlumaPage({ quiet: true }), 1200);
+        } else {
+          btn.disabled = false;
+          btn.textContent = '重试一键安装';
+          hint.textContent = `安装失败：${st.error || last || '未知错误'}（完整输出见下方应用日志）`;
+        }
+        return false;
+      } catch (e) {
+        clearInterval(setupPollTimer);
+        setupPollTimer = null;
+        btn.disabled = false;
+        btn.textContent = '一键安装协议端';
+        hint.textContent = `查询安装状态失败：${e.message}`;
+        return false;
+      }
+    }
+
     // ── 一键启动按钮事件 ──
     const quickStartBtn = $('#quick-start-btn');
     if (quickStartBtn) quickStartBtn.addEventListener('click', async () => {
@@ -234,6 +276,33 @@ async function loadSnowlumaPage({ quiet = false } = {}) {
       const hint = $('#quick-start-hint');
       btn.disabled = true;
       hint.textContent = '';
+
+      // 未安装协议端：安装版走一键安装，压缩包版只能提示 npm（按钮是 disabled 的，
+      // 这里只是兜底 —— 例如用户在压缩包版里手动改了 DOM）。
+      if (!qqReady) {
+        if (!packaged) {
+          btn.disabled = false;
+          hint.innerHTML = '请先运行 <code>npm run setup</code>';
+          return;
+        }
+        btn.textContent = '安装中…';
+        hint.textContent = '正在下载 SnowLuma 与便携 QQ（约 1.6 GB），请保持网络畅通…';
+        try {
+          const r = await api('/api/setup/run', { method: 'POST', body: JSON.stringify({}) });
+          if (!r.ok) {
+            btn.disabled = false;
+            btn.textContent = '一键安装协议端';
+            hint.textContent = r.error || '安装启动失败';
+            return;
+          }
+          setupPollTimer = setInterval(() => pollSetup(btn, hint), 1500);
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = '一键安装协议端';
+          hint.textContent = `安装启动失败：${e.message}`;
+        }
+        return;
+      }
 
       try {
         // 步骤 1：启动便携 QQ（如果未运行）

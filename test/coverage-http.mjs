@@ -951,6 +951,33 @@ c.section('10. 进程管理（安全分支）');
     assert.equal(r.data.ok, false);
     assert.ok(/未安装|setup/i.test(r.data.error || ''), `错误信息应说明原因，实际：${r.data.error}`);
   });
+
+  // ── 一键安装协议端（安装版专用）──
+  // 只在 QQ_AGENT_PACKAGED=1 时放行；测试进程里没这个环境变量，
+  // 所以这三条测的是"压缩包/开发模式下必须拒绝、且绝不 spawn"的安全分支。
+  await c.check('GET /api/setup/status：未打包时 supported=false 且不运行', async () => {
+    const r = await hit('GET', '/api/setup/status');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.supported, false, '测试进程不是安装版，supported 应为 false');
+    assert.equal(r.data.running, false);
+    assert.ok(Array.isArray(r.data.lines));
+  });
+
+  await c.check('POST /api/setup/run：未打包时拒绝且不启动子进程', async () => {
+    const r = await hit('POST', '/api/setup/run');
+    assert.equal(r.status, 409, `应拒绝（409），实际 ${r.status}`);
+    assert.equal(r.data.ok, false);
+    assert.ok(/npm run setup/i.test(r.data.error || ''), `应引导用 npm，实际：${r.data.error}`);
+    // 拒绝分支绝不能留下运行中的任务
+    const st = await hit('GET', '/api/setup/status');
+    assert.equal(st.data.running, false, '拒绝后不应有运行中的安装任务');
+  });
+
+  await c.check('POST /api/setup/cancel：没有任务时安全返回', async () => {
+    const r = await hit('POST', '/api/setup/cancel');
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, false, '没有可取消的任务');
+  });
 }
 
 // ── 11. 媒体取图（含 SSRF 回归） ─────────────────────────────────────────
