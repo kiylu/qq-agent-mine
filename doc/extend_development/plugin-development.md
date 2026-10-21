@@ -399,8 +399,50 @@ export function setup(api) {
 | `api.log/warn/error(...)` | 自动加 `[skill:<id>]` 前缀 |
 | `api.fetch` | ⚠️ 只有清单声明了 `permissions: ["web_fetch"]` 才拿得到；否则调用即 reject |
 | `api.utils.sleep(ms)` / `api.utils.safeJsonParse(text, fallback)` | 小工具 |
+| `api.sessions` | **会话桥**（可选）：把自己发起的运行记进「会话」页签。老核心为 `null`，必须写成 `api.sessions?.begin?.(...)`。见 6.1 |
 
 > 注意：能力是 `export const providers` **导出**的，不是 `api.registerXxx` 注册的，也没有 `api.registerHook`。
+
+### 6.1 会话桥：让插件自己的运行出现在「会话」页签
+
+**问题**：会话页的数据源是核心进程内的 `SessionRegistry`（内存数组），只由
+`orchestrator` 写入。插件"自己问 AI、自己发消息"这件事本来完全不可见 ——
+连花掉的 token 都不进用量页。写 `data/sessions/*.json` 也没用：索引不会重扫。
+
+**做法**：核心提供 `api.sessions`，插件只管"什么时候开始、结果是什么"：
+
+```js
+const run = api.sessions?.begin?.({
+  chatKey,                       // 'private:123' / 'group:456'，格式不对返回 null
+  pluginId: 'my-plugin',
+  triggerSummary: '主动私信 · 张三'   // 会话卡片上的一行说明
+});
+// 可能为 null（老核心 / 开关关闭 / 参数非法）—— 后面全部用可选链
+
+run?.update({ activity: '正在判断…' });   // 可选，显示在会话卡片上
+
+run?.finish({
+  status: 'done',                // 'done' | 'noreply' | 'error' | 'aborted'
+  text: modelOutput,             // 模型原始输出（进详情页）
+  sent: [{ type: 'text', text: '在吗', at: '20:01:02' }],
+  llmResult,                     // llm.chatCompletion() 的返回值，原样传
+  systemPrompt, userPrompt,      // 详情页「系统提示 / 本次输入」两栏
+  finishReason: 'AI 判断不用发',   // 可选，给 UI 看的一句话
+  error: null                    // status='error' 时填
+});
+```
+
+约定：
+
+- **`llmResult` 原样传**，不要自己算 token/成本 —— 核心用 `addUsage` + `vendorOfConfig`
+  统一记账，并且会把 `messages[].raw` 一起落盘（用量页的逐次调用行与遥测的
+  `calls` 都读它）。少传 `llmResult` 的会话在用量页里只是没有 token，不会报错。
+- `finish()` 幂等；运行期间抛异常时**务必在 `finally` 里补一次**
+  `finish({ status: 'aborted' })`，否则会话会一直挂在"运行中"。
+- 这类会话的 `trigger` 是 `'plugin:<id>'`，核心**拒绝重试**它（没有触发批可翻回未读），
+  UI 也不显示重试按钮。
+- 只暴露 `begin()`，拿不到 `SessionRegistry` 本体：不能删别人的会话。
+- 想在设置里给用户一个开关（默认推荐开），关掉时完全退回旧行为。
 
 ---
 

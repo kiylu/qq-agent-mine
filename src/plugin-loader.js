@@ -77,9 +77,13 @@ function adaptLegacyPrompt(raw, manifest) {
  * 构造暴露给 Skill 的安全 API。
  * 与旧插件 API 的差别：多了 config / hook 注册 / 能力查询，但仍然只给白名单能力。
  */
-function createSkillApi(skillId, permissions = []) {
+function createSkillApi(skillId, permissions = [], { sessions = null } = {}) {
   const has = (name) => permissions.includes(name);
   return {
+    // 会话桥（可选）：让"插件自己问 AI、自己发消息"的运行出现在「会话」页签里。
+    // 核心没提供时是 null —— 插件必须写成 api.sessions?.begin?.(...) 的降级形态。
+    // 由 src/plugin-sessions.js 构造，写操作仍全部经过 SessionRegistry。
+    sessions,
     // 注册工具（自动加 skillId 前缀 + 绑定来源，便于开关联动与批量清理）
     registerTool: (def) => {
       if (!def?.id) throw new Error('工具必须提供 id');
@@ -208,7 +212,7 @@ function lintKindPlacement(kind, { manifest, toolIds, providers, hooks }, log) {
  *
  * @returns {Promise<{dir, loaded, id?, error?, skill?}>}
  */
-async function loadSkillDir(dir, { log = console.log, kind = null } = {}) {
+async function loadSkillDir(dir, { log = console.log, kind = null, sessions = null } = {}) {
   const dirName = path.basename(dir);
   const found = readManifest(dir);
   const hadPrevious = found.error ? null : skillManager.isLoaded(
@@ -338,7 +342,7 @@ async function loadSkillDir(dir, { log = console.log, kind = null } = {}) {
   }
 
   const permissions = Array.isArray(found.raw.permissions) ? found.raw.permissions : [];
-  const api = createSkillApi(manifest.id, permissions);
+  const api = createSkillApi(manifest.id, permissions, { sessions });
 
   // ── 新旧交替的顺序闸（2026-09 修订版）────────────────────────────────────
   // 目标有两个，且互相牵制：
@@ -467,7 +471,7 @@ async function loadSkillDir(dir, { log = console.log, kind = null } = {}) {
 }
 
 /** 扫描一个目录下的所有 Skill。 */
-async function loadSkillRoot(rootDir, { log = console.log, label = 'skill' } = {}) {
+async function loadSkillRoot(rootDir, { log = console.log, label = 'skill', sessions = null } = {}) {
   if (!fs.existsSync(rootDir)) {
     // 不再静默：目录找不到必须打日志（历史上这里返回 missing 后被丢弃，
     // 表现为"安装版一个 Skill 都没有，且日志里毫无线索"）。
@@ -486,7 +490,7 @@ async function loadSkillRoot(rootDir, { log = console.log, label = 'skill' } = {
   const kind = kindOfDir(rootDir);
   for (const dir of dirs) {
     // 逐个串行加载：并行 import 时若两个 Skill 抢同一 id，顺序不确定
-    results.push(await loadSkillDir(dir, { log, kind }));
+    results.push(await loadSkillDir(dir, { log, kind, sessions }));
   }
   const loaded = results.filter((r) => r.loaded);
   const failed = results.filter((r) => !r.loaded);
@@ -498,12 +502,12 @@ async function loadSkillRoot(rootDir, { log = console.log, label = 'skill' } = {
  * 加载全部 Skill（skills/ + plugins/）。
  * 幂等：重复调用会重新加载并覆盖同 id 的 Skill（热重载依赖这个语义）。
  */
-export async function loadPlugins({ log = console.log, roots = null } = {}) {
+export async function loadPlugins({ log = console.log, roots = null, sessions = null } = {}) {
   const skillsRoot = roots?.skills ? path.resolve(roots.skills) : SKILLS_DIR;
   const pluginsRoot = roots?.plugins ? path.resolve(roots.plugins) : PLUGINS_DIR;
   skillManager.setLog(log);
-  const skillRes = await loadSkillRoot(skillsRoot, { log, label: 'skill' });
-  const pluginRes = await loadSkillRoot(pluginsRoot, { log, label: 'plugin' });
+  const skillRes = await loadSkillRoot(skillsRoot, { log, label: 'skill', sessions });
+  const pluginRes = await loadSkillRoot(pluginsRoot, { log, label: 'plugin', sessions });
   // 与磁盘对齐：把已经不存在于任何目录里的 Skill 卸掉（开发期删目录/改名的幽灵残留）。
   // 注意"存活集合"包含加载失败的 id —— 文件还在只是这次没加载成功，不触发卸载。
   // 加载失败的 Skill 现在分两种：
@@ -543,7 +547,7 @@ export async function loadPlugins({ log = console.log, roots = null } = {}) {
  * 因此整体重新扫描；但**不会**清空工具注册表 —— 逐个 Skill 注册时会覆盖同 id，
  * 旧 Skill 若已删除则需要显式清理，所以先按现存目录对比出被删除的 id。
  */
-export function watchPlugins({ log = console.log, onReload, roots: rootsOpt = null } = {}) {
+export function watchPlugins({ log = console.log, onReload, roots: rootsOpt = null, sessions = null } = {}) {
   const skillsRoot = rootsOpt?.skills ? path.resolve(rootsOpt.skills) : SKILLS_DIR;
   const pluginsRoot = rootsOpt?.plugins ? path.resolve(rootsOpt.plugins) : PLUGINS_DIR;
   const roots = [skillsRoot, pluginsRoot].filter((d) => fs.existsSync(d));
@@ -558,7 +562,10 @@ export function watchPlugins({ log = console.log, onReload, roots: rootsOpt = nu
     reloading = true;
     try {
       log(`[skill] 检测到变化：${filename || ''}，重新扫描…`);
-      const result = await loadPlugins({ log, roots: { skills: skillsRoot, plugins: pluginsRoot } });
+      // ⚠️ sessions 必须一起传：热重载走的是**这里**重新调 loadPlugins，
+      //    漏掉的话新实例拿到的 api.sessions 会变回 null ——
+      //    表现为"改一下插件文件，会话记录就悄悄停了"。
+      const result = await loadPlugins({ log, roots: { skills: skillsRoot, plugins: pluginsRoot }, sessions });
       if (typeof onReload === 'function') onReload(result);
     } catch (error) {
       log(`[skill] 热重载失败：${error?.message ?? error}`);

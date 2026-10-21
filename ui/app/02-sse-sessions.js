@@ -399,7 +399,10 @@ function renderSessionList() {
     const isNew = !state.seenSessionIds.has(s.id);
     // 失败会话的重试按钮：只有 error 状态且没发出过消息的才显示
     // （已发言的重试会导致群里重复内容，后端同样会拒绝）
-    const retryHtml = s.status === 'error' && !(s.sent && s.sent.length)
+    // 插件自己发起的会话（triggerKind = 'plugin:<id>'）不显示：它没有"触发批"
+    // 可翻回未读，点了也只会被后端拒绝（见 orchestrator.retrySession）。
+    const isPluginRun = String(s.triggerKind || '').startsWith('plugin:');
+    const retryHtml = s.status === 'error' && !isPluginRun && !(s.sent && s.sent.length)
       ? `<button class="btn btn-small session-retry-btn" data-id="${esc(s.id)}" title="把这条会话的触发消息翻回未读并重新处理">重试</button>`
       : '';
     // 运行中/等待中会话的中止按钮：运行中在下一轮请求前安全收尾，等待中直接干净消失
@@ -587,7 +590,7 @@ function renderSessionDetail(s) {
         ${canDelete ? `<button class="btn btn-small btn-danger" id="session-delete-btn" style="margin-left:6px" title="删除这条会话记录">删除</button>` : ''}
       </h2>
       <div class="sub">
-        <span>触发：${esc(s.triggerSummary || (s.trigger === 'proactive' ? '主动机会' : '-'))}</span>
+        <span>触发：${esc(s.triggerSummary || (String(s.triggerKind || '').startsWith('plugin:') ? '插件主动' : '-'))}</span>
         <span>开始 ${fmtClock(s.startedAt)}${s.endedAt ? ` · 结束 ${fmtClock(s.endedAt)}` : ' · 进行中'}</span>
         <span>模型 ${esc(s.model || '-')}</span>
         <span>${usage.calls || 0} 次调用 · ${fmtTokens(usage.promptTokens)} 入 / ${fmtTokens(usage.completionTokens)} 出 / ${fmtTokens(usage.totalTokens)} 总</span>

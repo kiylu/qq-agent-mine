@@ -1,6 +1,6 @@
 # 插件主动行为进「会话」页签 —— 核心暴露点方案（2026-10-20）
 
-日期：2026-10-20 ｜ 状态：**待评审** ｜ 目标插件：`plugins/silence-ping`（主动私信）
+日期：2026-10-20 ｜ 状态：**已实施（2026-10-21）** ｜ 目标插件：`plugins/silence-ping`（主动私信）
 
 依据：对 `src/sessions.js`、`src/plugin-loader.js`、`src/app.js`、`src/orchestrator.js`、
 `src/routes.js`、`ui/app/02-sse-sessions.js` 与 `plugins/silence-ping/index.js` 的实测分析。

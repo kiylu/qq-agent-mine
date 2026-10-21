@@ -144,6 +144,11 @@ export class Orchestrator {
     const s = this.sessions.current.get(id) || this.sessions.get(id);
     if (!s) return { ok: false, reason: '会话不存在' };
     if (s.status !== 'error') return { ok: false, reason: '只有失败的会话才能重试' };
+    // 插件自己发起的会话（trigger = 'plugin:<id>' 字符串）没有"触发批"可翻回未读：
+    // 重试会凭空唤醒这个聊天并生成一次普通回复 —— 对"主动私信"这类插件等于重复发言。
+    if (typeof s.trigger === 'string' && s.trigger.startsWith('plugin:')) {
+      return { ok: false, reason: '插件记录的会话不能重试（它不由消息触发）' };
+    }
     if (Array.isArray(s.sent) && s.sent.length > 0) return { ok: false, reason: '该会话已发出过消息，重试会导致重复发言' };
     if (this.runningChats.has(s.chatKey)) return { ok: false, reason: '该会话正在运行中' };
     // 把触发批重新标记为未读（消息本体一直在存档里，只是当初被 drain 置了已读）。

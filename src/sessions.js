@@ -326,6 +326,10 @@ export class SessionRegistry {
       usage: s.usage ?? null,
       model: s.model ?? '',
       trigger: s.triggerSummary ?? '',
+      // 触发**类型**（与上面 trigger 的摘要文本区分）：
+      //   'message' = 消息触发（trigger 是触发批数组）；'plugin:<id>' = 插件自己发起的运行。
+      // UI 据此隐藏"重试"按钮、详情页显示"插件主动"而不是"-"。
+      triggerKind: typeof s.trigger === 'string' ? s.trigger : 'message',
       promptChars: s.promptChars ?? 0,
       rounds: s.rounds ?? 0,
       // 本次会话成本（元）。null = 没调用过模型（UI 显示占位符）

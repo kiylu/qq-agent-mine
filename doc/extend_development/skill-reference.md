@@ -437,11 +437,40 @@ export function available() {
 | `fetch` | `(url, options) => Promise<Response>` | **仅当清单声明 `permissions: ["web_fetch"]` 时可用**；否则调用即 reject `Skill xxx 未声明 web_fetch 权限` |
 | `utils.sleep` | `(ms) => Promise` | 延时 |
 | `utils.safeJsonParse` | `(text, fallback?) => any` | 安全 JSON 解析，失败返回 fallback |
+| `sessions` | `{ begin } \| null` | **会话桥**（可选）：把自己发起的运行记进「会话」页签。老核心为 `null`，必须写成 `api.sessions?.begin?.(...)` |
+
+### 4.0 会话桥 `api.sessions`
+
+插件自己调模型、自己发消息时，这些运行默认**不会**出现在「会话」页签里
+（会话索引只由 orchestrator 写入，写 `data/sessions/*.json` 也不会被重扫）。
+`api.sessions.begin()` 走核心同一条 `SessionRegistry.create/finish` 路径，
+因此列表、详情、SSE、成本、用量统计、删除全部天然一致：
+
+```js
+const run = api.sessions?.begin?.({ chatKey, pluginId: 'my-plugin', triggerSummary: '主动私信 · 张三' });
+run?.update({ activity: '正在判断…' });
+run?.finish({
+  status: 'done',                       // done | noreply | error | aborted
+  text: modelOutput,
+  sent: [{ type: 'text', text: '在吗', at: '20:01:02' }],
+  llmResult,                            // llm.chatCompletion() 的返回值，原样传
+  systemPrompt, userPrompt,
+  finishReason: 'AI 判断不用发'
+});
+```
+
+要点：`finish()` 幂等、异常路径要在 `finally` 里补 `aborted`；`llmResult` 原样传
+（核心负责 `addUsage` 与 `messages[].raw`，插件不要自己算 token/成本）；
+这类会话的 `trigger` 是 `'plugin:<id>'`，**不可重试**。详见
+[plugin-development.md](plugin-development.md) 的 6.1。
 
 ### 4.1 ⚠️ `setup` 阶段拿不到的东西
 
 `setup(api)` 时**没有** QQ 接口、没有会话上下文、没有 store/memory。
 要做这些事，必须在**工具执行时**通过 `execute(ctx, args)` 的 `ctx` 拿（见第 10 节）。
+
+> 例外：`api.sessions`（会话桥，见 4.0）在 `setup` 阶段就可用 —— 它不依赖任何会话上下文，
+> 只需要一个 `chatKey`。定时型插件（如主动私信）正是靠它在 `setup` 时就拿到句柄。
 
 ### 4.2 配置读取的标准写法
 

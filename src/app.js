@@ -22,6 +22,7 @@ import { isPeakHour, priceAt, resolveModelPrice, modelLabel, splitModelLabel, UN
 import { initPriceFeed } from './price-feed.js';
 import { startTelemetryLoop } from './telemetry.js';
 import { loadPlugins, watchPlugins } from './plugin-loader.js';
+import { createPluginSessions } from './plugin-sessions.js';
 import { skillManager } from './skills/manager.js';
 import { extractCandidateUrls, dispatchMediaLinks } from './media-links.js';
 import { createRoutes } from './routes.js';
@@ -630,6 +631,9 @@ export function createApp({ log = console.log } = {}) {
             usage: s.usage ?? null,
             trigger: s.triggerSummary ?? '',
             triggerSummary: s.triggerSummary ?? '',
+            // 触发类型：'message' 或 'plugin:<id>'。UI 靠它区分插件发起的运行
+            // （隐藏重试按钮、详情页显示"插件主动"）。
+            triggerKind: typeof s.trigger === 'string' ? s.trigger : 'message',
             messages: s.messages ?? [],
             // sent/finishReason/error/endedAt 必须随 SSE 推下去：
             // 曾经载荷里没有它们，"已发送到 QQ"徽标只能等 HTTP 轮询带回来；
@@ -1640,13 +1644,20 @@ export function createApp({ log = console.log } = {}) {
     return port;
   }
 
+  // ── 插件会话桥 ────────────────────────────────────────────────────────
+  // 插件自己问 AI、自己发消息时，默认在「会话」页签里完全不可见（会话索引只由
+  // orchestrator 写入）。这里把"创建/收尾 + SSE + 用量口径"收成一个窄接口递给
+  // 插件（见 src/plugin-sessions.js），让这类运行也成为正常会话。
+  // 只暴露 begin()，不暴露 SessionRegistry 本体：插件不能删别人的会话。
+  const pluginSessions = createPluginSessions({ sessions, emit, log });
+
   // ── Skill 重扫：UI「刷新」按钮的唯一后端入口 ──────────────────────────
   // 之前「刷新」只重读内存注册表（GET /api/skills），不碰磁盘 —— watcher 丢事件
   // （目录删除重建后 fs.watch 句柄失效、网络盘、杀毒软件）时，点多少次刷新都
   // 看不到新插件。这里把"重扫磁盘 + 激活 + 刷工具 + 重建 watcher"做成一个
   // 幂等函数，启动流程和手动重扫共用，行为完全一致。
   async function reloadSkills({ reason = 'manual' } = {}) {
-    const result = await loadPlugins({ log });
+    const result = await loadPlugins({ log, sessions: pluginSessions });
     for (const st of skillManager.list()) {
       if (st.enabled && st.loaded) {
         try { skillManager.activate(st.id); } catch (error) { log(`[skill] 激活 ${st.id} 失败：${error?.message ?? error}`); }
@@ -1660,7 +1671,9 @@ export function createApp({ log = console.log } = {}) {
       || getConfig().extensions?.hotReload !== false;
     try { pluginWatcher?.close?.(); } catch { /* ignore */ }
     pluginWatcher = null;
-    if (hotReloadOn) pluginWatcher = watchPlugins({ log, onReload: () => reloadSkills({ reason: 'watch' }) });
+    // ⚠️ sessions 必须一起传：watchPlugins 内部会自己再调一次 loadPlugins，
+    //    漏掉的话热重载后的新插件实例拿不到会话桥（记录会静默停止）。
+    if (hotReloadOn) pluginWatcher = watchPlugins({ log, sessions: pluginSessions, onReload: () => reloadSkills({ reason: 'watch' }) });
 
     if (reason !== 'boot') {
       log(`[skill] 重扫完成（${reason}）：${result.loaded.length} 成功，${result.failed.length} 失败`
