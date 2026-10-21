@@ -200,9 +200,18 @@ if (watcher) {
 
 // ── 8. 真实插件：silence-ping 的 runCycle 真的会建会话 ──
 // 这一节守的是"插件接线对不对"：上面验证的是桥本身，这里验证插件真的调了它。
+//
+// ⚠️ silence-ping 是**开发者本机的示例插件**，不在版本库里（plugins/ 下只提交了
+//    conversation-memory-lite）。所以这一节在干净检出上必然找不到它 ——
+//    以前是直接 import 崩掉整个测试链，现在改成"缺失就跳过并说明原因"。
+//    想跑这一节：把 silence-ping 放进 plugins/ 即可自动启用。
 {
-  const pluginUrl = pathToFileURL(path.join(ROOT, 'plugins/silence-ping/index.js')).href;
-  const plugin = await import(pluginUrl);
+  const pluginEntry = path.join(ROOT, 'plugins/silence-ping/index.js');
+  if (!fs.existsSync(pluginEntry)) {
+    console.log('  ⚠ 跳过：plugins/silence-ping/ 不存在（该示例插件不随仓库分发）');
+  } else {
+    const pluginUrl = pathToFileURL(pluginEntry).href;
+    const plugin = await import(pluginUrl);
 
   // 造两条私聊存档（插件读 data/messages，不依赖钩子）
   fs.mkdirSync(path.join(DATA_DIR, 'messages'), { recursive: true });
@@ -276,6 +285,7 @@ if (watcher) {
   const after2 = (await sessionsOf()).length;
   check('关闭 recordSessions 后照常发送', r2?.decided === 'sent', JSON.stringify(r2)?.slice(0, 120));
   check('关闭 recordSessions 后不再新增会话', after2 === before2, `${before2} -> ${after2}`);
+  }
 }
 
 await app.stop();

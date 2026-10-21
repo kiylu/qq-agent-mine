@@ -96,10 +96,10 @@ Function AskOldVersionPage
   ${EndIf}
 
   ${If} $DetectedDir != ""
-    ${NSD_CreateLabel} 0 0 100% 54u "检测到本机已安装 QQ Agent：$\r$\n$DetectedDir$\r$\n$\r$\n将直接覆盖升级。你的用户数据（配置 / 记忆 / 聊天记录 / 表情包 / 登录状态）已在安装前自动备份，装完会原样放回，不会丢失。$\r$\n$\r$\n如果还想从别的位置并入数据（例如压缩包版），可在下面指定；不需要就留空，直接点「下一步」。"
+    ${NSD_CreateLabel} 0 0 100% 54u "检测到本机已安装 QQ Agent：$\r$\n$DetectedDir$\r$\n$\r$\n将直接覆盖升级。你的用户数据（配置 / 记忆 / 聊天记录 / 表情包）、协议端与便携 QQ 都已自动备份，装完会原样放回，不会丢失、不用重新下载。$\r$\n$\r$\n如果还想从别的位置并入数据（例如压缩包版），可在下面指定；不需要就留空，直接点「下一步」。"
     Pop $0
   ${Else}
-    ${NSD_CreateLabel} 0 0 100% 54u "如果你的电脑上已经有旧版本的 QQ Agent（比如压缩包版），在下面选择它所在的文件夹：$\r$\n$\r$\n安装完成后，会自动把旧版里的用户数据（配置 / 记忆 / 聊天记录 / 表情包 / 登录状态）迁移到新安装位置，无缝接管。$\r$\n$\r$\n没有旧版本的话，直接点「下一步」。"
+    ${NSD_CreateLabel} 0 0 100% 54u "如果你的电脑上已经有旧版本的 QQ Agent（比如压缩包版），在下面选择它所在的文件夹：$\r$\n$\r$\n安装完成后会把旧版整个搬过来：用户数据（配置 / 记忆 / 聊天记录 / 表情包）、SnowLuma 协议端与便携 QQ（含登录态，约 2 GB）—— 装完直接能用，不用重新下载或扫码。$\r$\n$\r$\n没有旧版本的话，直接点「下一步」。"
     Pop $0
   ${EndIf}
 
@@ -293,17 +293,55 @@ FunctionEnd
   ${EndIf}
 
   ; ④ 用户手动指定的旧版目录（压缩包用户）：显式选择优先
+  ;
+  ; ⚠️ 顺序：先搬 data\，再搬协议端大件，最后写 snowluma\config 登录态。
+  ;    登录态必须最后 —— snowluma\ 是整个目录搬过来的，先写会被旧 config 盖掉。
+  ;
+  ; ⚠️ 目标路径保护：用户可能把**旧 zip 目录本身**选成安装目录（想"就地转正"）。
+  ;    那种情况下 $OldDataDir 与 $INSTDIR 相同，MOVETREE 会试图把目录移进它自己
+  ;    （robocopy 报错 111 / 无限递归）。相同就跳过搬迁 —— 文件本来就在位。
+  ${If} $OldDataDir != ""
+    ${If} $OldDataDir == $INSTDIR
+      DetailPrint "旧版目录就是当前安装目录，无需搬迁"
+      StrCpy $OldDataDir ""
+    ${EndIf}
+  ${EndIf}
+
   ${If} $OldDataDir != ""
   ${AndIf} ${FileExists} "$OldDataDir\data\*.*"
     CreateDirectory "$INSTDIR\data"
     !insertmacro ROBOTREE "$OldDataDir\data" "$INSTDIR\data"
     DetailPrint "已迁移旧版本用户数据：$OldDataDir\data"
   ${EndIf}
-  ; SnowLuma 登录态 + OneBot 令牌一并带走，免重新扫码
+
+  ; 协议端与便携 QQ 本体：压缩包版是 setup 装在项目根目录的 snowluma\ 与 runtime\，
+  ; 安装版对应位置是 resources\app\ 下的同名目录。
+  ; 不搬的话，zip 老用户装完等于"协议端没装"，还要再下 1.7 GB —— 迁移页的承诺
+  ; （"无缝接管"）就不成立。用 /MOVE：同卷是 rename，秒级完成。
+  ;
+  ; runtime\qq-portable-data 是便携 QQ 的 --user-data-dir，QQ 登录态（Cookies 等）
+  ; 就存在里面 —— 少了它用户得重新扫码。
+  ;
+  ; ⚠️ 登录态（snowluma\config）必须**在搬 snowluma\ 之前**先复制到 $INSTDIR。
+  ;    搬完整个目录后源路径就没了，事后再去 $OldDataDir\snowluma\config 取会取空。
+  ;    这里的复制也顺带保证：即使后面 MOVETREE 失败，登录态也已经就位。
   ${If} $OldDataDir != ""
   ${AndIf} ${FileExists} "$OldDataDir\snowluma\config\*.*"
     CreateDirectory "$INSTDIR\resources\app\snowluma\config"
     !insertmacro ROBOTREE "$OldDataDir\snowluma\config" "$INSTDIR\resources\app\snowluma\config"
-    DetailPrint "已迁移 SnowLuma 登录状态"
+    DetailPrint "已迁移 SnowLuma 登录状态（显式指定目录）"
+  ${EndIf}
+
+  ${If} $OldDataDir != ""
+    ${If} ${FileExists} "$OldDataDir\snowluma\*.*"
+      CreateDirectory "$INSTDIR\resources\app\snowluma"
+      !insertmacro MOVETREE "$OldDataDir\snowluma" "$INSTDIR\resources\app\snowluma"
+      DetailPrint "已迁移 SnowLuma 协议端：$OldDataDir\snowluma"
+    ${EndIf}
+    ${If} ${FileExists} "$OldDataDir\runtime\*.*"
+      CreateDirectory "$INSTDIR\resources\app\runtime"
+      !insertmacro MOVETREE "$OldDataDir\runtime" "$INSTDIR\resources\app\runtime"
+      DetailPrint "已迁移便携 QQ 与登录态：$OldDataDir\runtime"
+    ${EndIf}
   ${EndIf}
 !macroend
